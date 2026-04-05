@@ -1,32 +1,55 @@
 #!/bin/bash
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
+
+echo "=== ADAPTER TEST (Session 39 fixes) ==="
+
+echo "--- Arabic ---"
 python3 -c "
-r={}
-try:
-    from analyzers.arabic import analyze_arabic
-    r['AR']=len(analyze_arabic(chr(1603)+chr(1578)+chr(1575)+chr(1576)))
-except Exception as e: r['AR']=str(e)[:60]
-try:
-    from analyzers.turkish import analyze_turkish
-    r['TR']=len(analyze_turkish('okudum'))
-except Exception as e: r['TR']=str(e)[:60]
-try:
-    from analyzers.german import analyze_german
-    r['DE']=len(analyze_german('Handschuh'))
-except Exception as e: r['DE']=str(e)[:60]
-try:
-    from analyzers.english import analyze_english
-    r['EN']=len(analyze_english('running'))
-except Exception as e: r['EN']=str(e)[:60]
-try:
-    from analyzers.latin import analyze_latin
-    r['LA']=len(analyze_latin('laudat'))
-except Exception as e: r['LA']=str(e)[:60]
-try:
-    from analyzers.chinese import analyze_chinese
-    r['ZH']=len(analyze_chinese('water'))
-except Exception as e: r['ZH']=str(e)[:60]
-p=sum(1 for v in r.values() if isinstance(v,int))
-print(' '.join(k+':'+str(v) for k,v in r.items())+' SCORE:'+str(p)+'/6')
-"
+from analyzers.arabic import analyze_arabic
+r = analyze_arabic('kitab')
+print(f'AR: {len(r)} results')
+if r: print(f'  Sample: {r[0]}')
+" 2>&1
+
+echo "--- Turkish ---"
+python3 -c "
+from analyzers.turkish import analyze_turkish
+r = analyze_turkish('okudum')
+print(f'TR: {len(r)} results')
+if r: print(f'  Sample: {r[0]}')
+" 2>&1
+
+echo "--- German ---"
+python3 -c "
+from analyzers.german import analyze_german
+r = analyze_german('Handschuh')
+print(f'DE: {len(r)} results')
+if r: print(f'  Sample: {r[0]}')
+" 2>&1
+
+echo "--- English ---"
+python3 -c "
+from analyzers.english import analyze_english
+r = analyze_english('unhappiness')
+print(f'EN: {len(r)} results')
+if r: print(f'  Sample: {r[0]}')
+" 2>&1
+
+echo "--- Latin ---"
+python3 -c "
+from analyzers.latin import analyze_latin
+r = analyze_latin('laudat')
+print(f'LA: {len(r)} results')
+if r: print(f'  Sample: {r[0]}')
+" 2>&1
+
+echo "--- Chinese ---"
+python3 -c "
+from analyzers.chinese import analyze_chinese
+r = analyze_chinese('学习')
+print(f'ZH: {len(r)} results')
+if r: print(f'  Sample: {r[0]}')
+" 2>&1
+
+echo "=== TEST COMPLETE ==="

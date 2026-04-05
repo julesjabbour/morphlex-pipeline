@@ -35,6 +35,16 @@ _LATMOR_POS_MAP = {
 }
 
 
+def _check_morpheus_reachable() -> bool:
+    """Check if Morpheus Docker service is reachable."""
+    try:
+        url = "http://localhost:1315/analysis/word/laudo"
+        with urllib.request.urlopen(url, timeout=3) as response:
+            return response.status == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return False
+
+
 def _query_morpheus(word: str) -> list[dict]:
     """
     Query Morpheus REST API for Latin morphological analysis.
@@ -46,6 +56,11 @@ def _query_morpheus(word: str) -> list[dict]:
         List of analysis dicts from Morpheus
     """
     results = []
+
+    # Check if Morpheus is reachable
+    if not _check_morpheus_reachable():
+        print("Morpheus not reachable")
+        return results
 
     try:
         url = f"http://localhost:1315/latin/{word}"
@@ -140,7 +155,7 @@ def _query_latmor(word: str) -> list[dict]:
     try:
         # Run fst-infl with the word
         proc = subprocess.run(
-            ['fst-infl', '/mnt/pgdata/morphlex/LatMor/latmor.a'],
+            ['fst-infl', '/mnt/pgdata/morphlex/data/latmor/latmor.a'],
             input=word,
             capture_output=True,
             text=True,

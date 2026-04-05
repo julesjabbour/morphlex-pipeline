@@ -7,8 +7,8 @@ import os
 # Initialize the segmenter
 _seg = pkuseg.pkuseg()
 
-# Paths to data files - will be resolved at load time
-_CEDICT_PATH = None
+# Paths to data files
+_CEDICT_PATH = '/mnt/pgdata/morphlex/data/cedict.txt'
 _IDS_PATH = '/mnt/pgdata/morphlex/cjkvi-ids/ids.txt'
 
 # Lazy-loaded lookup dictionaries
@@ -49,13 +49,9 @@ def _find_cedict_path() -> str:
 
 def _load_cedict():
     """Load and parse CC-CEDICT dictionary."""
-    global _cedict, _CEDICT_PATH
+    global _cedict
     if _cedict is not None:
         return _cedict
-
-    # Find cedict path if not already set
-    if _CEDICT_PATH is None:
-        _CEDICT_PATH = _find_cedict_path()
 
     _cedict = {}
     with open(_CEDICT_PATH, 'r', encoding='utf-8') as f:

@@ -1,6 +1,10 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex
-git pull origin main --ff-only 2>/dev/null
+
+# Force-sync with GitHub (handles dirty repo from completed_task.sh)
+git fetch origin && git reset --hard origin/main
+
+# Check if there's a pending task
 if [ -f pending_task.sh ]; then
   echo "[$(date)] Running pending_task.sh" >> /tmp/pipeline.log
   source /mnt/pgdata/morphlex/venv/bin/activate

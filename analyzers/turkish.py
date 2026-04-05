@@ -51,6 +51,30 @@ def _parse_morphemes(morphemes: list) -> dict:
     return features
 
 
+def _extract_lemma_from_analysis_string(analysis_str: str) -> tuple[str, str]:
+    """
+    Extract lemma and POS from Zeyrek analysis string.
+
+    Format: [oku:Verb]+[Past:Past]+[A1sg:A1sg] or (okumak_Verb)(-)(...)
+
+    Returns:
+        Tuple of (lemma, pos)
+    """
+    import re
+
+    # Try bracket format: [lemma:POS]+...
+    bracket_match = re.match(r'\[([^:]+):([^\]]+)\]', str(analysis_str))
+    if bracket_match:
+        return bracket_match.group(1), bracket_match.group(2)
+
+    # Try parenthesis format: (lemma_POS)
+    paren_match = re.match(r'\(([^_]+)_([^)]+)\)', str(analysis_str))
+    if paren_match:
+        return paren_match.group(1), paren_match.group(2)
+
+    return str(analysis_str), None
+
+
 def analyze_turkish(word: str) -> list[dict]:
     """
     Analyze a Turkish word and return morphological analyses.
@@ -68,17 +92,73 @@ def analyze_turkish(word: str) -> list[dict]:
 
     results = []
 
-    # Zeyrek returns list of WordAnalysis named tuples
-    # Each WordAnalysis has: word, lemmas, roots, pos_tags, morphemes, formatted
-    for analysis in analyses:
-        # Handle both old tuple format and new WordAnalysis format
-        if hasattr(analysis, 'lemmas'):
-            # New Zeyrek format: WordAnalysis named tuple
-            lemmas = analysis.lemmas if hasattr(analysis, 'lemmas') else []
-            morpheme_lists = analysis.morphemes if hasattr(analysis, 'morphemes') else []
+    # Zeyrek returns list of tuples: (word, analyses_list)
+    # Each analysis in analyses_list can be a string or structured object
+    for word_result in analyses:
+        if isinstance(word_result, tuple) and len(word_result) >= 2:
+            word_form, analyses_list = word_result[0], word_result[1]
+
+            for analysis in analyses_list:
+                # Handle string format analysis
+                if isinstance(analysis, str):
+                    lemma, pos = _extract_lemma_from_analysis_string(analysis)
+                    result = {
+                        'language_code': 'tr',
+                        'word_native': word,
+                        'lemma': lemma,
+                        'root': None,
+                        'pos': pos,
+                        'morphological_features': {},
+                        'confidence': 0.0,
+                        'source_tool': 'zeyrek'
+                    }
+                    results.append(result)
+                # Handle object with formatted attribute
+                elif hasattr(analysis, 'formatted'):
+                    lemma, pos = _extract_lemma_from_analysis_string(analysis.formatted)
+                    result = {
+                        'language_code': 'tr',
+                        'word_native': word,
+                        'lemma': lemma,
+                        'root': None,
+                        'pos': pos,
+                        'morphological_features': {},
+                        'confidence': 0.0,
+                        'source_tool': 'zeyrek'
+                    }
+                    results.append(result)
+                # Handle tuple/list item format
+                elif isinstance(analysis, (tuple, list)) and len(analysis) >= 2:
+                    lemma = analysis[0]
+                    pos = analysis[1] if len(analysis) > 1 else None
+                    morphemes = analysis[2] if len(analysis) > 2 else []
+
+                    # Extract clean lemma if it has POS suffix
+                    clean_lemma = lemma
+                    if isinstance(lemma, str) and '_' in lemma:
+                        parts = lemma.rsplit('_', 1)
+                        clean_lemma = parts[0]
+                        if pos is None:
+                            pos = parts[1]
+
+                    morphological_features = _parse_morphemes(morphemes) if morphemes else {}
+                    result = {
+                        'language_code': 'tr',
+                        'word_native': word,
+                        'lemma': clean_lemma,
+                        'root': None,
+                        'pos': pos,
+                        'morphological_features': morphological_features,
+                        'confidence': 0.0,
+                        'source_tool': 'zeyrek'
+                    }
+                    results.append(result)
+        # Handle WordAnalysis named tuple format
+        elif hasattr(word_result, 'lemmas'):
+            lemmas = word_result.lemmas if hasattr(word_result, 'lemmas') else []
+            morpheme_lists = word_result.morphemes if hasattr(word_result, 'morphemes') else []
 
             for i, lemma in enumerate(lemmas):
-                # Extract POS from lemma if present (e.g., "okumak_Verb" -> "Verb")
                 pos = None
                 clean_lemma = lemma
                 if '_' in lemma:
@@ -86,7 +166,6 @@ def analyze_turkish(word: str) -> list[dict]:
                     clean_lemma = parts[0]
                     pos = parts[1] if len(parts) > 1 else None
 
-                # Get morphemes for this analysis if available
                 morphemes = morpheme_lists[i] if i < len(morpheme_lists) else []
                 morphological_features = _parse_morphemes(morphemes)
 
@@ -94,29 +173,6 @@ def analyze_turkish(word: str) -> list[dict]:
                     'language_code': 'tr',
                     'word_native': word,
                     'lemma': clean_lemma,
-                    'root': None,
-                    'pos': pos,
-                    'morphological_features': morphological_features,
-                    'confidence': 0.0,
-                    'source_tool': 'zeyrek'
-                }
-                results.append(result)
-        elif isinstance(analysis, tuple) and len(analysis) >= 2:
-            # Old format: (word, [(lemma, pos, morphemes), ...])
-            word_form, parse_results = analysis
-            for item in parse_results:
-                if len(item) >= 3:
-                    lemma, pos, morphemes = item[0], item[1], item[2]
-                elif len(item) >= 2:
-                    lemma, pos, morphemes = item[0], item[1], []
-                else:
-                    continue
-
-                morphological_features = _parse_morphemes(morphemes)
-                result = {
-                    'language_code': 'tr',
-                    'word_native': word,
-                    'lemma': lemma,
                     'root': None,
                     'pos': pos,
                     'morphological_features': morphological_features,
