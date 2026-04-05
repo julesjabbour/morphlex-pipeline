@@ -92,94 +92,25 @@ def analyze_turkish(word: str) -> list[dict]:
 
     results = []
 
-    # Zeyrek returns list of tuples: (word, analyses_list)
-    # Each analysis in analyses_list can be a string or structured object
-    for word_result in analyses:
-        if isinstance(word_result, tuple) and len(word_result) >= 2:
-            word_form, analyses_list = word_result[0], word_result[1]
+    # Zeyrek returns list of Parse namedtuples with attributes:
+    # .word, .lemma, .pos, .morphemes, .formatted
+    for parse in analyses:
+        # Handle Parse namedtuple objects (has .lemma, .pos, .morphemes attributes)
+        if hasattr(parse, 'lemma') and hasattr(parse, 'pos'):
+            morphemes = parse.morphemes if hasattr(parse, 'morphemes') and parse.morphemes else []
+            morphological_features = _parse_morphemes(morphemes)
 
-            for analysis in analyses_list:
-                # Handle string format analysis
-                if isinstance(analysis, str):
-                    lemma, pos = _extract_lemma_from_analysis_string(analysis)
-                    result = {
-                        'language_code': 'tr',
-                        'word_native': word,
-                        'lemma': lemma,
-                        'root': None,
-                        'pos': pos,
-                        'morphological_features': {},
-                        'confidence': 0.0,
-                        'source_tool': 'zeyrek'
-                    }
-                    results.append(result)
-                # Handle object with formatted attribute
-                elif hasattr(analysis, 'formatted'):
-                    lemma, pos = _extract_lemma_from_analysis_string(analysis.formatted)
-                    result = {
-                        'language_code': 'tr',
-                        'word_native': word,
-                        'lemma': lemma,
-                        'root': None,
-                        'pos': pos,
-                        'morphological_features': {},
-                        'confidence': 0.0,
-                        'source_tool': 'zeyrek'
-                    }
-                    results.append(result)
-                # Handle tuple/list item format
-                elif isinstance(analysis, (tuple, list)) and len(analysis) >= 2:
-                    lemma = analysis[0]
-                    pos = analysis[1] if len(analysis) > 1 else None
-                    morphemes = analysis[2] if len(analysis) > 2 else []
-
-                    # Extract clean lemma if it has POS suffix
-                    clean_lemma = lemma
-                    if isinstance(lemma, str) and '_' in lemma:
-                        parts = lemma.rsplit('_', 1)
-                        clean_lemma = parts[0]
-                        if pos is None:
-                            pos = parts[1]
-
-                    morphological_features = _parse_morphemes(morphemes) if morphemes else {}
-                    result = {
-                        'language_code': 'tr',
-                        'word_native': word,
-                        'lemma': clean_lemma,
-                        'root': None,
-                        'pos': pos,
-                        'morphological_features': morphological_features,
-                        'confidence': 0.0,
-                        'source_tool': 'zeyrek'
-                    }
-                    results.append(result)
-        # Handle WordAnalysis named tuple format
-        elif hasattr(word_result, 'lemmas'):
-            lemmas = word_result.lemmas if hasattr(word_result, 'lemmas') else []
-            morpheme_lists = word_result.morphemes if hasattr(word_result, 'morphemes') else []
-
-            for i, lemma in enumerate(lemmas):
-                pos = None
-                clean_lemma = lemma
-                if '_' in lemma:
-                    parts = lemma.rsplit('_', 1)
-                    clean_lemma = parts[0]
-                    pos = parts[1] if len(parts) > 1 else None
-
-                morphemes = morpheme_lists[i] if i < len(morpheme_lists) else []
-                morphological_features = _parse_morphemes(morphemes)
-
-                result = {
-                    'language_code': 'tr',
-                    'word_native': word,
-                    'lemma': clean_lemma,
-                    'root': None,
-                    'pos': pos,
-                    'morphological_features': morphological_features,
-                    'confidence': 0.0,
-                    'source_tool': 'zeyrek'
-                }
-                results.append(result)
+            result = {
+                'language_code': 'tr',
+                'word_native': word,
+                'lemma': parse.lemma,
+                'root': None,
+                'pos': parse.pos,
+                'morphological_features': morphological_features,
+                'confidence': 0.0,
+                'source_tool': 'zeyrek'
+            }
+            results.append(result)
 
     # Calculate confidence based on total number of results
     if results:

@@ -2,7 +2,7 @@
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
 
-echo "=== ADAPTER TEST (Session 39) ==="
+echo "=== ADAPTER TEST (TR/LA fixes) ==="
 
 echo "--- Arabic ---"
 python3 -c "

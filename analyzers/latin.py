@@ -38,7 +38,8 @@ _LATMOR_POS_MAP = {
 def _check_morpheus_reachable() -> bool:
     """Check if Morpheus Docker service is reachable."""
     try:
-        url = "http://localhost:1315/analysis/word/laudo"
+        # Morpheus API uses /latin/:word endpoint format
+        url = "http://localhost:1315/latin/laudo"
         with urllib.request.urlopen(url, timeout=3) as response:
             return response.status == 200
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
