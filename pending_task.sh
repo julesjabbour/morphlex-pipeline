@@ -58,8 +58,8 @@ if results:
     db_config = {
         'host': 'localhost',
         'dbname': 'morphlex',
-        'user': 'postgres',
-        'password': ''
+        'user': 'morphlex_user',
+        'password': 'morphlex_2026'
     }
     try:
         orchestrator.insert_to_db(results, db_config)
@@ -74,7 +74,7 @@ echo ""
 echo "=== DATABASE CHECK ==="
 
 # Check PostgreSQL count and sample
-psql -U postgres -d morphlex -c "SELECT count(*) AS total_entries FROM lexicon.entries;" 2>&1
-psql -U postgres -d morphlex -c "SELECT language_code, word_native, lemma, pos, source_tool FROM lexicon.entries ORDER BY id DESC LIMIT 1;" 2>&1
+PGPASSWORD=morphlex_2026 psql -U morphlex_user -d morphlex -c "SELECT count(*) FROM lexicon.entries;" 2>&1
+PGPASSWORD=morphlex_2026 psql -U morphlex_user -d morphlex -c "SELECT * FROM lexicon.entries LIMIT 1;" 2>&1
 
 echo "=== TEST COMPLETE ==="
