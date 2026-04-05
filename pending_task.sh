@@ -2,14 +2,11 @@
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
 python3 -c "
-from analyzers.latin import analyze_latin
-r1 = analyze_latin('scriptorum')
+from analyzers.chinese import analyze_chinese
+r1 = analyze_chinese('我爱北京天安门')
 assert len(r1) > 0, 'No results'
-print(f'ANALYSES: {len(r1)}')
-print(f'LEMMA: {r1[0].get(\"lemma\",\"\")}')
-print(f'POS: {r1[0].get(\"pos\",\"\")}')
-r2 = analyze_latin('laudat')
-assert len(r2) > 0
-print(f'WORD2 LEMMA: {r2[0].get(\"lemma\",\"\")}')
-print('ENG-006 PASS')
+print(f'SEGMENTS: {len(r1)}')
+for r in r1:
+    print(f'  {r[\"word_native\"]} -> pinyin={r.get(\"morphological_features\",{}).get(\"pinyin\",\"?\")}')
+print('ENG-007 PASS')
 "
