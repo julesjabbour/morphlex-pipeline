@@ -1,6 +1,17 @@
 #!/bin/bash
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
+
+# Fix infra issues
+pip install openpyxl -q
+docker start morpheus-api 2>/dev/null || docker run -d --name morpheus-api -p 1315:1315 --restart=always perseidsproject/morpheus-api:v1.0.15
+sleep 10
+
+# Find cedict
+echo "CEDICT SEARCH:"
+find /mnt/pgdata -name "cedict*" -type f 2>/dev/null
+
+# Run full test
 python3 << 'PYEOF'
 results = {}
 

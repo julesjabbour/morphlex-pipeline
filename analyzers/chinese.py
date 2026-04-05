@@ -1,12 +1,14 @@
 """Chinese morphological analyzer using pkuseg, CC-CEDICT, and CJKVI-IDS."""
 
 import spacy_pkuseg as pkuseg
+import subprocess
+import os
 
 # Initialize the segmenter
 _seg = pkuseg.pkuseg()
 
-# Paths to data files
-_CEDICT_PATH = '/mnt/pgdata/morphlex/cedict.txt'
+# Paths to data files - will be resolved at load time
+_CEDICT_PATH = None
 _IDS_PATH = '/mnt/pgdata/morphlex/cjkvi-ids/ids.txt'
 
 # Lazy-loaded lookup dictionaries
@@ -14,11 +16,46 @@ _cedict = None
 _ids = None
 
 
+def _find_cedict_path() -> str:
+    """Find cedict.txt by searching multiple locations."""
+    # Try common locations first
+    candidates = [
+        '/mnt/pgdata/morphlex/cedict.txt',
+        '/mnt/pgdata/morphlex/data/cedict.txt',
+    ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            print(f"CEDICT found at: {path}")
+            return path
+
+    # Fallback: use find command
+    try:
+        result = subprocess.run(
+            ['find', '/mnt/pgdata', '-name', 'cedict*', '-type', 'f'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.stdout.strip():
+            found_path = result.stdout.strip().split('\n')[0]
+            print(f"CEDICT found via search at: {found_path}")
+            return found_path
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+        pass
+
+    raise FileNotFoundError("cedict.txt not found in any expected location")
+
+
 def _load_cedict():
     """Load and parse CC-CEDICT dictionary."""
-    global _cedict
+    global _cedict, _CEDICT_PATH
     if _cedict is not None:
         return _cedict
+
+    # Find cedict path if not already set
+    if _CEDICT_PATH is None:
+        _CEDICT_PATH = _find_cedict_path()
 
     _cedict = {}
     with open(_CEDICT_PATH, 'r', encoding='utf-8') as f:
