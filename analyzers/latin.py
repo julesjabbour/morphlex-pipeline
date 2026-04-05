@@ -41,8 +41,12 @@ def _check_morpheus_reachable() -> bool:
         # Morpheus API uses /latin/:word endpoint format
         url = "http://localhost:1315/latin/laudo"
         with urllib.request.urlopen(url, timeout=3) as response:
-            return response.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+            # 200 means word found, 404 means word not found - both mean Morpheus is responding
+            return response.status in (200, 404)
+    except urllib.error.HTTPError as e:
+        # 404 is still a valid response from Morpheus (word not found)
+        return e.code == 404
+    except (urllib.error.URLError, TimeoutError):
         return False
 
 

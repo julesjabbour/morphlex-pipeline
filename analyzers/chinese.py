@@ -9,7 +9,7 @@ _seg = pkuseg.pkuseg()
 
 # Paths to data files
 _CEDICT_PATH = '/mnt/pgdata/morphlex/data/cedict.txt'
-_IDS_PATH = '/mnt/pgdata/morphlex/cjkvi-ids/ids.txt'
+_IDS_PATH = '/mnt/pgdata/morphlex/data/cjkvi-ids/ids.txt'
 
 # Lazy-loaded lookup dictionaries
 _cedict = None

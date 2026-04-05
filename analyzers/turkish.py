@@ -94,7 +94,7 @@ def analyze_turkish(word: str) -> list[dict]:
 
     # Zeyrek returns list of Parse namedtuples with attributes:
     # .word, .lemma, .pos, .morphemes, .formatted
-    for parse in analyses:
+    for parse in (analyses[0] if analyses and isinstance(analyses[0], list) else analyses):
         # Handle Parse namedtuple objects (has .lemma, .pos, .morphemes attributes)
         if hasattr(parse, 'lemma') and hasattr(parse, 'pos'):
             morphemes = parse.morphemes if hasattr(parse, 'morphemes') and parse.morphemes else []
