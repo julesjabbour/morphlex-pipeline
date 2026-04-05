@@ -35,21 +35,6 @@ _LATMOR_POS_MAP = {
 }
 
 
-def _check_morpheus_reachable() -> bool:
-    """Check if Morpheus Docker service is reachable."""
-    try:
-        # Morpheus API uses /latin/:word endpoint format
-        url = "http://localhost:1315/latin/laudo"
-        with urllib.request.urlopen(url, timeout=3) as response:
-            # 200 means word found, 404 means word not found - both mean Morpheus is responding
-            return response.status in (200, 404)
-    except urllib.error.HTTPError as e:
-        # 404 is still a valid response from Morpheus (word not found)
-        return e.code == 404
-    except (urllib.error.URLError, TimeoutError):
-        return False
-
-
 def _query_morpheus(word: str) -> list[dict]:
     """
     Query Morpheus REST API for Latin morphological analysis.
@@ -61,11 +46,6 @@ def _query_morpheus(word: str) -> list[dict]:
         List of analysis dicts from Morpheus
     """
     results = []
-
-    # Check if Morpheus is reachable
-    if not _check_morpheus_reachable():
-        print("Morpheus not reachable")
-        return results
 
     try:
         url = f"http://localhost:1315/latin/{word}"
