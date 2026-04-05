@@ -6,6 +6,10 @@ if [ ! -f "$CONFIG" ]; then
 fi
 WEBHOOK_URL=$(cat "$CONFIG")
 MESSAGE="$1"
-curl -s -X POST "$WEBHOOK_URL" \
-  -H 'Content-type: application/json' \
-  --data "{\"text\": \"$MESSAGE\"}" > /dev/null 2>&1
+python3 -c "
+import json, urllib.request, sys
+msg = sys.argv[1][:3000]
+data = json.dumps({'text': msg}).encode()
+req = urllib.request.Request(sys.argv[2], data=data, headers={'Content-Type': 'application/json'})
+urllib.request.urlopen(req)
+" "$MESSAGE" "$WEBHOOK_URL"
