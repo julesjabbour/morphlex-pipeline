@@ -1,18 +1,30 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex
 
-# Force-sync with GitHub (handles dirty repo from completed_task.sh)
+# Force-sync with GitHub (handles dirty repo)
 git fetch origin && git reset --hard origin/main
 
-# Check if there's a pending task
-if [ -f pending_task.sh ]; then
-  echo "[$(date)] Running pending_task.sh" >> /tmp/pipeline.log
-  source /mnt/pgdata/morphlex/venv/bin/activate
-  TASK_OUTPUT=$(bash pending_task.sh 2>&1)
-  EXIT_CODE=$?
-  mv pending_task.sh completed_task.sh
-  if [ $EXIT_CODE -eq 0 ]; then STATUS="SUCCESS"; else STATUS="FAILED (exit code $EXIT_CODE)"; fi
-  bash /mnt/pgdata/morphlex/slack_report.sh "*Task $STATUS*
+# Check if there's a task to run (use next_task.sh, not pending_task.sh)
+if [ -f next_task.sh ]; then
+  # Compute md5 hash of task file content
+  TASK_HASH=$(md5sum next_task.sh | cut -d' ' -f1)
+  FLAG_FILE="/tmp/.task_done_${TASK_HASH}"
+
+  # Check if this exact task already ran (prevents infinite loop after git reset)
+  if [ -f "$FLAG_FILE" ]; then
+    echo "[$(date)] Skipping next_task.sh (already ran, hash: $TASK_HASH)" >> /tmp/pipeline.log
+  else
+    echo "[$(date)] Running next_task.sh (hash: $TASK_HASH)" >> /tmp/pipeline.log
+    source /mnt/pgdata/morphlex/venv/bin/activate
+    TASK_OUTPUT=$(bash next_task.sh 2>&1)
+    EXIT_CODE=$?
+
+    # Create flag file to mark this task as done
+    touch "$FLAG_FILE"
+
+    if [ $EXIT_CODE -eq 0 ]; then STATUS="SUCCESS"; else STATUS="FAILED (exit code $EXIT_CODE)"; fi
+    bash /mnt/pgdata/morphlex/slack_report.sh "*Task $STATUS*
 $TASK_OUTPUT"
-  echo "[$(date)] Task $STATUS" >> /tmp/pipeline.log
+    echo "[$(date)] Task $STATUS" >> /tmp/pipeline.log
+  fi
 fi
