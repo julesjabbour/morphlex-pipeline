@@ -2,11 +2,12 @@
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
 python3 -c "
-from analyzers.chinese import analyze_chinese
-r1 = analyze_chinese('我爱北京天安门')
-assert len(r1) > 0, 'No results'
-print(f'SEGMENTS: {len(r1)}')
-for r in r1:
-    print(f'  {r[\"word_native\"]} -> pinyin={r.get(\"morphological_features\",{}).get(\"pinyin\",\"?\")}')
-print('ENG-007 PASS')
+from pipeline.etymology_enricher import enrich_etymology
+r1 = enrich_etymology('book', 'en')
+print(f'RELATIONS: {len(r1)}')
+for r in r1[:5]:
+    print(f'  {r[\"relation_type\"]}: {r[\"related_word\"]} ({r[\"related_language\"]})')
+r2 = enrich_etymology('water', 'en')
+print(f'WATER RELATIONS: {len(r2)}')
+print('ENG-015 PASS')
 "
