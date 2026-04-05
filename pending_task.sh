@@ -2,54 +2,79 @@
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
 
-echo "=== ADAPTER TEST (Session 39) ==="
+echo "=== ORCHESTRATOR TEST (ENG-008) ==="
 
-echo "--- Arabic ---"
-python3 -c "
-from analyzers.arabic import analyze_arabic
-r = analyze_arabic('kitab')
-print(f'AR: {len(r)} results')
-if r: print(f'  Sample: {r[0]}')
-" 2>&1
+# Test batch: 10 words per language (60 total)
+python3 << 'PYEOF'
+import sys
+sys.path.insert(0, '/mnt/pgdata/morphlex')
 
-echo "--- Turkish ---"
-python3 -c "
-from analyzers.turkish import analyze_turkish
-r = analyze_turkish('okudum')
-print(f'TR: {len(r)} results')
-if r: print(f'  Sample: {r[0]}')
-" 2>&1
+from pipeline.orchestrator import PipelineOrchestrator
 
-echo "--- German ---"
-python3 -c "
-from analyzers.german import analyze_german
-r = analyze_german('Handschuh')
-print(f'DE: {len(r)} results')
-if r: print(f'  Sample: {r[0]}')
-" 2>&1
+# Test words (10 per language)
+test_batch = [
+    # Arabic
+    ('kitab', 'ar'), ('kalb', 'ar'), ('bayt', 'ar'), ('madrasa', 'ar'), ('qalam', 'ar'),
+    ('yaktub', 'ar'), ('darasa', 'ar'), ('kabir', 'ar'), ('saghir', 'ar'), ('jamil', 'ar'),
+    # Turkish
+    ('okudum', 'tr'), ('kitap', 'tr'), ('ev', 'tr'), ('gelmek', 'tr'), ('yazmak', 'tr'),
+    ('okul', 'tr'), ('buyuk', 'tr'), ('kucuk', 'tr'), ('guzel', 'tr'), ('insan', 'tr'),
+    # German
+    ('Handschuh', 'de'), ('Haus', 'de'), ('Buch', 'de'), ('Schule', 'de'), ('Kindergarten', 'de'),
+    ('schreiben', 'de'), ('lesen', 'de'), ('Freiheit', 'de'), ('Freundschaft', 'de'), ('Weltanschauung', 'de'),
+    # English
+    ('unhappiness', 'en'), ('running', 'en'), ('beautiful', 'en'), ('unbelievable', 'en'), ('friendship', 'en'),
+    ('quickly', 'en'), ('teacher', 'en'), ('happiness', 'en'), ('wonderful', 'en'), ('impossible', 'en'),
+    # Latin
+    ('laudat', 'la'), ('amat', 'la'), ('rex', 'la'), ('bellum', 'la'), ('amor', 'la'),
+    ('bonus', 'la'), ('magnus', 'la'), ('scribo', 'la'), ('video', 'la'), ('audio', 'la'),
+    # Chinese
+    ('学习', 'zh'), ('中国', 'zh'), ('朋友', 'zh'), ('明天', 'zh'), ('工作', 'zh'),
+    ('美丽', 'zh'), ('快乐', 'zh'), ('时间', 'zh'), ('电脑', 'zh'), ('学校', 'zh'),
+]
 
-echo "--- English ---"
-python3 -c "
-from analyzers.english import analyze_english
-r = analyze_english('unhappiness')
-print(f'EN: {len(r)} results')
-if r: print(f'  Sample: {r[0]}')
-" 2>&1
+print(f"Testing orchestrator with {len(test_batch)} words...")
 
-echo "--- Latin ---"
-python3 -c "
-from analyzers.latin import analyze_latin
-r = analyze_latin('laudat')
-print(f'LA: {len(r)} results')
-if r: print(f'  Sample: {r[0]}')
-" 2>&1
+orchestrator = PipelineOrchestrator()
+results = orchestrator.batch_analyze(test_batch)
 
-echo "--- Chinese ---"
-python3 -c "
-from analyzers.chinese import analyze_chinese
-r = analyze_chinese('学习')
-print(f'ZH: {len(r)} results')
-if r: print(f'  Sample: {r[0]}')
-" 2>&1
+print(f"\nTotal analysis results: {len(results)}")
+
+# Group by language for summary
+by_lang = {}
+for r in results:
+    lang = r.get('language_code', 'unknown')
+    by_lang[lang] = by_lang.get(lang, 0) + 1
+
+print("\nResults by language:")
+for lang, count in sorted(by_lang.items()):
+    print(f"  {lang}: {count}")
+
+if results:
+    print(f"\nSample result: {results[0]}")
+
+# Insert into database
+if results:
+    db_config = {
+        'host': 'localhost',
+        'dbname': 'morphlex',
+        'user': 'postgres',
+        'password': ''
+    }
+    try:
+        orchestrator.insert_to_db(results, db_config)
+        print("\nDatabase insert: SUCCESS")
+    except Exception as e:
+        print(f"\nDatabase insert: FAILED - {e}")
+else:
+    print("\nNo results to insert")
+PYEOF
+
+echo ""
+echo "=== DATABASE CHECK ==="
+
+# Check PostgreSQL count and sample
+psql -U postgres -d morphlex -c "SELECT count(*) AS total_entries FROM lexicon.entries;" 2>&1
+psql -U postgres -d morphlex -c "SELECT language_code, word_native, lemma, pos, source_tool FROM lexicon.entries ORDER BY id DESC LIMIT 1;" 2>&1
 
 echo "=== TEST COMPLETE ==="
