@@ -2,14 +2,14 @@
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
 python3 -c "
-from analyzers.german import analyze_german
-r1 = analyze_german('Handschuh')
+from analyzers.english import analyze_english
+r1 = analyze_english('unhappiness')
 assert len(r1) > 0, 'No results'
-has_compound = any(r.get('compound_components') for r in r1)
-print(f'COMPOUND: {[r.get(\"compound_components\") for r in r1]}')
-r2 = analyze_german('getestet')
+print(f'LEMMA: {r1[0].get(\"lemma\",\"\")}')
+print(f'POS: {r1[0].get(\"pos\",\"\")}')
+print(f'ROOT: {r1[0].get(\"root\",\"\")}')
+r2 = analyze_english('running')
 assert len(r2) > 0
-print(f'LEMMA: {r2[0].get(\"lemma\",\"\")}')
-print(f'POS: {r2[0].get(\"pos\",\"\")}')
-print('ENG-004 PASS')
+print(f'WORD2 LEMMA: {r2[0].get(\"lemma\",\"\")}')
+print('ENG-005 PASS')
 "
