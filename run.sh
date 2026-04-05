@@ -1,20 +1,14 @@
 #!/bin/bash
-REPORT=""
-
-# Run setup first
-SETUP_OUT=$(bash /mnt/pgdata/morphlex/setup_db.sh 2>&1)
-REPORT="*Setup:* $SETUP_OUT"
-
-# Apply schema
-source /mnt/pgdata/morphlex/venv/bin/activate
-SCHEMA_OUT=$(sudo -u postgres psql -d morphlex -f /mnt/pgdata/morphlex/schema.sql 2>&1)
-REPORT="$REPORT\n*Schema:* $SCHEMA_OUT"
-
-# Verify
-VERIFY_OUT=$(sudo -u postgres psql -d morphlex -c "\dt lexicon.*" 2>&1)
-REPORT="$REPORT\n*Tables:* $VERIFY_OUT"
-
-echo "Pipeline run complete at $(date)" >> /tmp/pipeline.log
-
-# Report to Slack
-bash /mnt/pgdata/morphlex/slack_report.sh "$(echo -e "$REPORT")"
+cd /mnt/pgdata/morphlex
+git pull origin main --ff-only 2>/dev/null
+if [ -f pending_task.sh ]; then
+  echo "[$(date)] Running pending_task.sh" >> /tmp/pipeline.log
+  source /mnt/pgdata/morphlex/venv/bin/activate
+  TASK_OUTPUT=$(bash pending_task.sh 2>&1)
+  EXIT_CODE=$?
+  mv pending_task.sh completed_task.sh
+  if [ $EXIT_CODE -eq 0 ]; then STATUS="SUCCESS"; else STATUS="FAILED (exit code $EXIT_CODE)"; fi
+  bash /mnt/pgdata/morphlex/slack_report.sh "*Task $STATUS*
+$TASK_OUTPUT"
+  echo "[$(date)] Task $STATUS" >> /tmp/pipeline.log
+fi
