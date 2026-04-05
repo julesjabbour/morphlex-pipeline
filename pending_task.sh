@@ -2,47 +2,27 @@
 source /mnt/pgdata/morphlex/venv/bin/activate
 cd /mnt/pgdata/morphlex
 python3 -c "
-from pipeline.orchestrator import PipelineOrchestrator
-orch = PipelineOrchestrator()
-
-# Test dispatch to all 6 languages
-test_words = [
-    ('كتاب', 'ar'),
-    ('okudum', 'tr'),
-    ('Handschuh', 'de'),
-    ('unhappiness', 'en'),
-    ('scriptorum', 'la'),
-    ('我爱北京', 'zh'),
-]
-
-results = orch.batch_analyze(test_words)
-print(f'TOTAL RESULTS: {len(results)}')
-
-# Count per language
-from collections import Counter
-langs = Counter(r['language_code'] for r in results)
-for lang, count in sorted(langs.items()):
-    print(f'  {lang}: {count} analyses')
-
-# Test DB insert
-db_config = {
-    'host': 'localhost',
-    'dbname': 'morphlex',
-    'user': 'morphlex_user',
-    'password': 'morphlex_2026'
-}
-orch.insert_to_db(results, db_config)
-
-# Verify in DB
+# First verify ENG-008 data exists
 import psycopg2
+db_config = {'host':'localhost','dbname':'morphlex','user':'morphlex_user','password':'morphlex_2026'}
 conn = psycopg2.connect(**db_config)
 cur = conn.cursor()
-cur.execute('SELECT language_code, COUNT(*) FROM lexicon.entries GROUP BY language_code ORDER BY language_code')
-rows = cur.fetchall()
-print('DB COUNTS:')
-for lang, count in rows:
-    print(f'  {lang}: {count}')
+cur.execute('SELECT COUNT(*) FROM lexicon.entries')
+count = cur.fetchone()[0]
+assert count > 0, f'No entries in DB — ENG-008 must run first. Found {count} entries.'
+print(f'ENTRIES IN DB: {count}')
+
+# Test translation of first 3 entries only (to stay within free tier)
+cur.execute('SELECT id, word_native, language_code FROM lexicon.entries LIMIT 3')
+entries = [{'id':r[0],'word_native':r[1],'language_code':r[2]} for r in cur.fetchall()]
 conn.close()
 
-print('ENG-008 PASS')
+from pipeline.translator import translate_batch
+# Test single batch translation
+test_words = [e['word_native'] for e in entries]
+translations = translate_batch(test_words, 'en')
+print(f'TRANSLATED {len(test_words)} words to English:')
+for orig, trans in zip(test_words, translations):
+    print(f'  {orig} -> {trans}')
+print('ENG-009 PASS')
 "
