@@ -1,24 +1,23 @@
 """Latin morphological analyzer using Morpheus and LatMor."""
 
 import subprocess
-import xml.etree.ElementTree as ET
 import re
 import urllib.request
 import urllib.error
 
 
-# POS tag mapping from Morpheus
+# POS tag mapping from Morpheus (uses single-letter codes in <NL> format)
 _MORPHEUS_POS_MAP = {
-    'verb': 'verb',
-    'noun': 'noun',
-    'adj': 'adjective',
-    'adv': 'adverb',
-    'prep': 'preposition',
-    'conj': 'conjunction',
-    'pron': 'pronoun',
-    'part': 'participle',
-    'num': 'numeral',
-    'interj': 'interjection',
+    'V': 'verb',
+    'N': 'noun',
+    'ADJ': 'adjective',
+    'ADV': 'adverb',
+    'PREP': 'preposition',
+    'CONJ': 'conjunction',
+    'PRON': 'pronoun',
+    'PART': 'participle',
+    'NUM': 'numeral',
+    'INTERJ': 'interjection',
 }
 
 # LatMor POS tag mapping
@@ -39,6 +38,9 @@ def _query_morpheus(word: str) -> list[dict]:
     """
     Query Morpheus REST API for Latin morphological analysis.
 
+    Morpheus returns a custom text format (NOT JSON):
+    <NL>V laudo_.laudo  pres ind act 1st sg        conj1.are.vb</NL>
+
     Args:
         word: Latin word to analyze
 
@@ -50,76 +52,81 @@ def _query_morpheus(word: str) -> list[dict]:
     try:
         url = f"http://localhost:1315/latin/{word}"
         with urllib.request.urlopen(url, timeout=5) as response:
-            xml_data = response.read().decode('utf-8')
+            text_data = response.read().decode('utf-8')
 
-        # Parse XML response
-        root = ET.fromstring(xml_data)
+        # Parse each <NL>...</NL> block
+        nl_blocks = re.findall(r'<NL>([^<]+)</NL>', text_data)
 
-        for analysis in root.findall('.//analysis'):
+        for block in nl_blocks:
+            block = block.strip()
+            if not block:
+                continue
+
             result = {
                 'lemma': '',
-                'stem': '',
                 'pos': '',
                 'features': {}
             }
 
-            # Extract hdwd (lemma)
-            hdwd = analysis.find('.//hdwd')
-            if hdwd is not None and hdwd.text:
-                result['lemma'] = hdwd.text.strip()
+            # Split on whitespace - POS is first token
+            tokens = block.split()
+            if not tokens:
+                continue
 
-            # Extract stem
-            stem = analysis.find('.//stem')
-            if stem is not None and stem.text:
-                result['stem'] = stem.text.strip()
+            # First token is POS (V, N, ADJ, etc.)
+            pos_raw = tokens[0].upper()
+            result['pos'] = _MORPHEUS_POS_MAP.get(pos_raw, pos_raw.lower())
 
-            # Extract POS
-            pos_elem = analysis.find('.//pofs')
-            if pos_elem is not None and pos_elem.text:
-                pos_raw = pos_elem.text.strip().lower()
-                result['pos'] = _MORPHEUS_POS_MAP.get(pos_raw, pos_raw)
+            # Second token contains lemma: format is "word_.lemma" - extract part after the dot
+            if len(tokens) > 1:
+                lemma_part = tokens[1]
+                # Lemma is the part after the dot (e.g., "laudo_.laudo" -> "laudo")
+                if '.' in lemma_part:
+                    result['lemma'] = lemma_part.split('.', 1)[1]
+                else:
+                    result['lemma'] = lemma_part
 
-            # Extract morphological features
-            # Case
-            case_elem = analysis.find('.//case')
-            if case_elem is not None and case_elem.text:
-                result['features']['case'] = case_elem.text.strip().lower()
+            # Remaining tokens (before the conjugation info) are morphological features
+            # Features like: pres ind act 1st sg
+            feature_tokens = tokens[2:] if len(tokens) > 2 else []
 
-            # Gender
-            gend_elem = analysis.find('.//gend')
-            if gend_elem is not None and gend_elem.text:
-                result['features']['gender'] = gend_elem.text.strip().lower()
+            for feat in feature_tokens:
+                feat_lower = feat.lower()
 
-            # Number
-            num_elem = analysis.find('.//num')
-            if num_elem is not None and num_elem.text:
-                result['features']['number'] = num_elem.text.strip().lower()
+                # Skip conjugation info (e.g., conj1.are.vb)
+                if '.' in feat:
+                    continue
 
-            # Tense
-            tense_elem = analysis.find('.//tense')
-            if tense_elem is not None and tense_elem.text:
-                result['features']['tense'] = tense_elem.text.strip().lower()
-
-            # Mood
-            mood_elem = analysis.find('.//mood')
-            if mood_elem is not None and mood_elem.text:
-                result['features']['mood'] = mood_elem.text.strip().lower()
-
-            # Voice
-            voice_elem = analysis.find('.//voice')
-            if voice_elem is not None and voice_elem.text:
-                result['features']['voice'] = voice_elem.text.strip().lower()
-
-            # Person
-            pers_elem = analysis.find('.//pers')
-            if pers_elem is not None and pers_elem.text:
-                result['features']['person'] = pers_elem.text.strip()
+                # Tense
+                if feat_lower in ('pres', 'impf', 'fut', 'perf', 'plup', 'futperf'):
+                    result['features']['tense'] = feat_lower
+                # Mood
+                elif feat_lower in ('ind', 'subj', 'imp', 'inf', 'supine', 'gerundive', 'gerund'):
+                    result['features']['mood'] = feat_lower
+                # Voice
+                elif feat_lower in ('act', 'pass', 'mp'):
+                    result['features']['voice'] = feat_lower
+                # Number
+                elif feat_lower in ('sg', 'pl', 'dual'):
+                    result['features']['number'] = feat_lower
+                # Person
+                elif feat_lower in ('1st', '2nd', '3rd'):
+                    result['features']['person'] = feat_lower
+                # Case
+                elif feat_lower in ('nom', 'gen', 'dat', 'acc', 'abl', 'voc', 'loc'):
+                    result['features']['case'] = feat_lower
+                # Gender
+                elif feat_lower in ('masc', 'fem', 'neut'):
+                    result['features']['gender'] = feat_lower
+                # Degree
+                elif feat_lower in ('pos', 'comp', 'superl'):
+                    result['features']['degree'] = feat_lower
 
             if result['lemma']:
                 results.append(result)
 
-    except (urllib.error.URLError, urllib.error.HTTPError, ET.ParseError, TimeoutError):
-        # Connection error or parse error - will fall back to LatMor
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        # Connection error - will fall back to LatMor
         pass
 
     return results
