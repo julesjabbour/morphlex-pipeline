@@ -1,74 +1,62 @@
 #!/bin/bash
-cd /mnt/pgdata/morphlex && source venv/bin/activate
+# Read diagnostic report and output summary/key findings only
 
-echo "=== TIMED ORCHESTRATOR TEST: 100 WORDS x 11 LANGUAGES ==="
+REPORT="/mnt/pgdata/morphlex/diagnostic_report.md"
+
+if [ ! -f "$REPORT" ]; then
+    echo "ERROR: Diagnostic report not found at $REPORT"
+    exit 1
+fi
+
+# Extract key sections using sed
+echo "=== DIAGNOSTIC REPORT: KEY FINDINGS ==="
 echo ""
 
-python3 << 'PYEOF'
-import sys
-sys.path.insert(0, '/mnt/pgdata/morphlex')
-
-from collections import defaultdict
-from datetime import datetime
-from pipeline.orchestrator import PipelineOrchestrator
-
-# 100 common English nouns for timing test
-TEST_WORDS = [
-    'water', 'fire', 'hand', 'eye', 'stone', 'heart', 'sun', 'moon', 'tree', 'blood',
-    'earth', 'wind', 'rain', 'snow', 'star', 'light', 'dark', 'gold', 'silver', 'iron',
-    'bone', 'salt', 'sand', 'clay', 'dust', 'smoke', 'ice', 'wood', 'leaf', 'root',
-    'seed', 'fruit', 'fish', 'bird', 'wolf', 'horse', 'lion', 'snake', 'bear', 'deer',
-    'ant', 'bee', 'milk', 'bread', 'meat', 'rice', 'wine', 'beer', 'oil', 'wax',
-    'egg', 'wool', 'silk', 'skin', 'hair', 'nail', 'tooth', 'tongue', 'nose', 'ear',
-    'arm', 'leg', 'foot', 'knee', 'neck', 'back', 'head', 'face', 'mouth', 'lip',
-    'bone', 'wing', 'tail', 'horn', 'claw', 'fur', 'rope', 'net', 'bow', 'axe',
-    'knife', 'sword', 'wheel', 'boat', 'door', 'wall', 'roof', 'road', 'bridge', 'tower',
-    'gate', 'pit', 'hill', 'field', 'lake', 'river', 'sea', 'sky', 'cloud', 'thunder'
-]
-
-# All 11 language codes
-LANGUAGES = ['ar', 'tr', 'de', 'en', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
-
-# Print start time
-start_time = datetime.now()
-print(f"START TIME: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-print("")
-
-orchestrator = PipelineOrchestrator()
-
-# Track results per language
-results_by_lang = defaultdict(list)
-total_results = []
-
-print("--- Running analysis ---")
-for word in TEST_WORDS:
-    for lang in LANGUAGES:
-        try:
-            results = orchestrator.analyze(word, lang)
-            results_by_lang[lang].extend(results)
-            total_results.extend(results)
-        except Exception as e:
-            print(f"  ERROR {lang}/{word}: {e}")
-
-print("")
-print("--- Results per language ---")
-for lang in LANGUAGES:
-    count = len(results_by_lang[lang])
-    status = "OK" if count > 0 else "EMPTY"
-    print(f"  {lang:8}: {count:4} results [{status}]")
-
-print("")
-print(f"TOTAL: {len(total_results)} results from {len(TEST_WORDS)} words x {len(LANGUAGES)} languages")
-
-# Print end time
-end_time = datetime.now()
-print("")
-print(f"END TIME: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-elapsed = (end_time - start_time).total_seconds()
-print(f"ELAPSED: {elapsed:.2f} seconds")
-print(f"TIME PER WORD: {elapsed / len(TEST_WORDS):.3f} seconds/word")
-
-PYEOF
+# Title and Executive Summary (lines 1-20)
+sed -n '1,20p' "$REPORT"
 
 echo ""
-echo "=== DONE ==="
+echo "---"
+echo ""
+
+# Language-by-Language Code Path Trace table (lines 32-47)
+echo "### Language-by-Language Code Path Trace"
+echo ""
+sed -n '34,47p' "$REPORT"
+
+echo ""
+echo "---"
+echo ""
+
+# Section 5: False Positive Risk Summary (extract risk levels only)
+echo "### False Positive Risk by Adapter"
+echo ""
+grep -E "^####.*RISK" "$REPORT" | sed 's/^#### /- /'
+
+echo ""
+echo "---"
+echo ""
+
+# Section 8: Summary Results Matrix - Current State table
+echo "## Summary Results Matrix"
+echo ""
+echo "### Current State: Arabic Word Input"
+echo ""
+sed -n '516,529p' "$REPORT"
+
+echo ""
+echo "### After Proposed Changes"
+echo ""
+sed -n '532,547p' "$REPORT"
+
+echo ""
+echo "---"
+echo ""
+
+# Section 6: Required Changes summary
+echo "## Required Changes for Arabic Anchor (Section Headers)"
+echo ""
+grep -E "^### [0-9]+\." "$REPORT"
+
+echo ""
+echo "=== END KEY FINDINGS ==="
