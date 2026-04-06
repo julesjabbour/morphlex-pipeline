@@ -1,14 +1,24 @@
 #!/bin/bash
+FLAG="/tmp/.eng015_020_complete"
+if [ -f "$FLAG" ]; then
+    echo "=== ALREADY COMPLETE — SKIPPING ==="
+    exit 0
+fi
+
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 echo "=== ENG-015 + ENG-020 COMBINED TEST ==="
 
-# Skip index build if exists
 if [ -f data/etymology_index.pkl ]; then
   echo "Etymology index exists, skipping build"
 else
   echo "Building etymology index..."
-  python3 pipeline/etymology_enricher.py --build-index
+  python3 -c "
+import sys
+sys.path.insert(0, '/mnt/pgdata/morphlex')
+from pipeline.etymology_enricher import build_etymology_index
+build_etymology_index()
+"
 fi
 
 echo ""
@@ -36,7 +46,5 @@ for w in ['*wódr̥', '*ph₂tḗr', '*méh₂tēr']:
 " 2>&1
 
 echo ""
-echo "=== SELF-DESTRUCT ==="
-rm -f /mnt/pgdata/morphlex/next_task.sh
-echo "next_task.sh removed — no more reruns"
-echo "=== ALL TESTS COMPLETE ==="
+touch "$FLAG"
+echo "=== ALL TESTS COMPLETE — flag set, will not rerun ==="

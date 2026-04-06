@@ -16,6 +16,7 @@ from analyzers.greek import analyze_greek
 from analyzers.japanese import analyze_japanese
 from analyzers.hebrew import analyze_hebrew
 from analyzers.sanskrit import analyze_sanskrit
+from analyzers.pie import analyze_pie
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class PipelineOrchestrator:
             'ja': analyze_japanese,
             'he': analyze_hebrew,
             'sa': analyze_sanskrit,
+            'ine-pro': analyze_pie,
         }
 
     def analyze(self, word: str, language: str) -> list[dict]:
