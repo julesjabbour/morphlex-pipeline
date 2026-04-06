@@ -1,25 +1,21 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== PIE ADAPTER TEST ==="
-ls -lh data/wiktextract_index.pkl
+echo "=== ETYMOLOGY ENRICHER TEST ==="
 
 python3 -c "
-import sys, pickle
+import sys
 sys.path.insert(0, '/mnt/pgdata/morphlex')
 
-with open('data/wiktextract_index.pkl', 'rb') as f:
-    idx = pickle.load(f)
-pie_count = len(idx.get('ine-pro', {}))
-print(f'ine-pro entries in index: {pie_count}')
-if pie_count > 0:
-    print(f'Sample PIE forms: {list(idx[\"ine-pro\"].keys())[:5]}')
+from pipeline.etymology_enricher import test_etymology
+results = test_etymology()
 
-from analyzers.pie import analyze_pie
-for w in ['*wódr̥', '*ph₂tḗr', '*méh₂tēr']:
-    r = analyze_pie(w)
-    print(f'PIE {w}: {len(r)} results')
-    if r: print(f'  -> {r[0]}')
+print()
+print('=== SUMMARY ===')
+print(f'Etymology DB index entries: {results[\"index_counts\"][\"etymology_db\"]}')
+print(f'CogNet index entries: {results[\"index_counts\"][\"cognet\"]}')
+total_hits = sum(r['enrichments_count'] for r in results['test_results'])
+print(f'Total enrichments found across test words: {total_hits}')
 " 2>&1
 
 echo "=== COMPLETE ==="
