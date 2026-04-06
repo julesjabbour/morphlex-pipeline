@@ -5,9 +5,8 @@ Extracts etymology data from Wiktextract dump - ancestors, cognates, and cross-l
 Uses etymology_templates field for structured inh/der/cog/bor entries.
 
 Architecture:
-- Etymology index (etymology_index.pkl) = ancestor chains + cognates ONLY
-- Wiktextract translation index (wiktextract_index.pkl, 41MB) = cross-language translations ONLY
-- These two indexes serve different purposes and should not be mixed.
+- Etymology index (etymology_index.pkl) = ancestor chains + cognates
+- Forward translations (forward_translations.pkl) = cross-language translations from English entries
 """
 
 import os
@@ -18,51 +17,15 @@ import pickle
 # Paths
 RAW_WIKTEXTRACT_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
 ETYMOLOGY_INDEX_PATH = "/mnt/pgdata/morphlex/data/etymology_index.pkl"
-WIKTEXTRACT_INDEX_PATH = "/mnt/pgdata/morphlex/data/wiktextract_index.pkl"
+FORWARD_TRANSLATIONS_PATH = "/mnt/pgdata/morphlex/data/forward_translations.pkl"
 
 # Target languages for cross-links
 TARGET_LANGUAGES = ['ar', 'he', 'ja', 'zh', 'de', 'tr', 'sa', 'la', 'grc', 'ine-pro']
 
 # Global indexes
 _etymology_index: dict = {}
-_wiktextract_index: dict = {}
-_forward_translations: dict = None
+_forward_translations: dict = {}
 _indexes_loaded: bool = False
-
-# Script validation patterns for languages with distinct scripts
-# Returns True if the word contains at least one character from the expected script
-def _valid_script(lang: str, word: str) -> bool:
-    """Check if word contains characters from the expected script for the language."""
-    if lang == 'zh':
-        # CJK Unified Ideographs: U+4E00-U+9FFF
-        return any('\u4e00' <= c <= '\u9fff' for c in word)
-    elif lang == 'ar':
-        # Arabic: U+0600-U+06FF
-        return any('\u0600' <= c <= '\u06ff' for c in word)
-    elif lang == 'he':
-        # Hebrew: U+0590-U+05FF
-        return any('\u0590' <= c <= '\u05ff' for c in word)
-    elif lang == 'ja':
-        # CJK or Hiragana/Katakana: U+3040-U+30FF or U+4E00-U+9FFF
-        return any(('\u3040' <= c <= '\u30ff') or ('\u4e00' <= c <= '\u9fff') for c in word)
-    elif lang == 'sa':
-        # Devanagari: U+0900-U+097F
-        return any('\u0900' <= c <= '\u097f' for c in word)
-    elif lang == 'grc':
-        # Greek: U+0370-U+03FF or Extended Greek: U+1F00-U+1FFF
-        return any(('\u0370' <= c <= '\u03ff') or ('\u1f00' <= c <= '\u1fff') for c in word)
-    # de, tr, la use Latin script - no filter needed
-    return True
-
-
-def _definition_score(concept, english_word: str) -> int:
-    """Lower score = better match. 0 = english_word appears in first definition."""
-    defs = concept.get('definitions', []) if isinstance(concept, dict) else []
-    ew_lower = english_word.lower()
-    for i, d in enumerate(defs):
-        if isinstance(d, str) and ew_lower in d.lower():
-            return i
-    return 999  # english_word not found in any definition
 
 
 def build_etymology_index(force_rebuild: bool = False) -> int:
@@ -172,8 +135,8 @@ def build_etymology_index(force_rebuild: bool = False) -> int:
 
 
 def _load_indexes():
-    """Load etymology index, wiktextract index, and build forward translations."""
-    global _etymology_index, _wiktextract_index, _forward_translations, _indexes_loaded
+    """Load etymology index and forward translations."""
+    global _etymology_index, _forward_translations, _indexes_loaded
 
     if _indexes_loaded:
         return
@@ -194,46 +157,13 @@ def _load_indexes():
         print("Run build_etymology_index() first.")
         _etymology_index = {}
 
-    # Load wiktextract index and build forward translations
-    if os.path.exists(WIKTEXTRACT_INDEX_PATH):
-        with open(WIKTEXTRACT_INDEX_PATH, 'rb') as f:
-            _wiktextract_index = pickle.load(f)
-
-        # Build forward translation index: english_word -> {lang: (foreign_word, pos, score)}
-        # Fix 1 (Polysemy): Prefer noun senses - nouns always replace non-nouns
-        # Fix 2 (Script validation): Filter garbage entries with wrong scripts
-        # Fix 3 (Noun-vs-noun): Use definition scoring - lower score wins
-        _forward_translations = {}
-        for lang, words in _wiktextract_index.items():
-            for foreign_word, concepts in words.items():
-                # Script validation: reject entries with wrong script for the language
-                if not _valid_script(lang, foreign_word):
-                    continue
-
-                for concept in concepts:
-                    eng = concept.get('english_word', '') if isinstance(concept, dict) else str(concept)
-                    pos = concept.get('pos', '') if isinstance(concept, dict) else ''
-                    if eng:
-                        if eng not in _forward_translations:
-                            _forward_translations[eng] = {}
-                        if lang not in _forward_translations[eng]:
-                            # First entry for this (english_word, lang) — take it
-                            score = _definition_score(concept, eng)
-                            _forward_translations[eng][lang] = (foreign_word, pos, score)
-                        else:
-                            # Already have an entry — check replacement rules
-                            existing = _forward_translations[eng][lang]
-                            existing_pos = existing[1]
-                            existing_score = existing[2]
-                            new_score = _definition_score(concept, eng)
-                            # Noun always beats non-noun
-                            if pos == 'noun' and existing_pos != 'noun':
-                                _forward_translations[eng][lang] = (foreign_word, pos, new_score)
-                            # Between two nouns, lower definition score wins
-                            elif pos == 'noun' and existing_pos == 'noun' and new_score < existing_score:
-                                _forward_translations[eng][lang] = (foreign_word, pos, new_score)
+    # Load forward translations index
+    if os.path.exists(FORWARD_TRANSLATIONS_PATH):
+        with open(FORWARD_TRANSLATIONS_PATH, 'rb') as f:
+            _forward_translations = pickle.load(f)
     else:
-        _wiktextract_index = {}
+        print(f"WARNING: Forward translations not found at {FORWARD_TRANSLATIONS_PATH}")
+        print("Run build_forward_translations.py first.")
         _forward_translations = {}
 
     _indexes_loaded = True
@@ -347,19 +277,17 @@ def get_cross_links(concept: str) -> dict:
     """
     Find cross-language links for target languages.
 
-    Uses forward translations built from wiktextract_index.pkl (41MB).
-    First foreign word per language = Wiktionary's primary translation.
+    Uses forward_translations.pkl built from English entries' translations lists.
+    First translation per language = Wiktionary's primary sense translation.
 
     Args:
         concept: English word to look up
 
     Returns:
-        Dict mapping language code to translation: {"de": "König", "la": "rex", ...}
+        Dict mapping language code to translation: {"de": "Haus", "la": "domus", ...}
     """
-    if _forward_translations is None:
-        load_indexes()
-    return {lang: fw[0] for lang, fw in _forward_translations.get(concept.lower().strip(), {}).items()
-            if lang in TARGET_LANGUAGES and fw[0] and fw[0] != '-'}
+    _load_indexes()
+    return _forward_translations.get(concept.lower().strip(), {})
 
 
 def enrich_etymology(concept: str) -> dict:
@@ -394,22 +322,27 @@ def test_etymology():
     """
     print("=== ETYMOLOGY ENRICHER TEST ===")
     print(f"Etymology index path: {ETYMOLOGY_INDEX_PATH}")
-    print(f"Wiktextract index path: {WIKTEXTRACT_INDEX_PATH}")
+    print(f"Forward translations path: {FORWARD_TRANSLATIONS_PATH}")
     print()
 
     # Check files exist
     print(f"Etymology index exists: {os.path.exists(ETYMOLOGY_INDEX_PATH)}")
-    print(f"Wiktextract index exists: {os.path.exists(WIKTEXTRACT_INDEX_PATH)}")
+    print(f"Forward translations exists: {os.path.exists(FORWARD_TRANSLATIONS_PATH)}")
 
     if os.path.exists(ETYMOLOGY_INDEX_PATH):
         size = os.path.getsize(ETYMOLOGY_INDEX_PATH) / (1024 * 1024)
         print(f"Etymology index size: {size:.1f}MB")
+
+    if os.path.exists(FORWARD_TRANSLATIONS_PATH):
+        size = os.path.getsize(FORWARD_TRANSLATIONS_PATH) / (1024 * 1024)
+        print(f"Forward translations size: {size:.1f}MB")
 
     print()
 
     # Load indexes
     _load_indexes()
     print(f"Etymology index entries: {len(_etymology_index):,}")
+    print(f"Forward translations entries: {len(_forward_translations):,}")
     print()
 
     # Test words
