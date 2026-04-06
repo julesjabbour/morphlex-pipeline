@@ -1,462 +1,404 @@
 """
 Etymology Enricher module for morphlex pipeline.
 
-Loads etymology data from etymology-db (4.2M relationships) and CogNet (8.1M cognates)
-to find etymological ancestors, cognates, and derivation chains across languages.
+Extracts etymology data from Wiktextract dump - ancestors, cognates, and cross-language links.
+Uses etymology_templates field for structured inh/der/cog/bor entries.
 """
 
 import os
+import gzip
 import json
-import csv
-from pathlib import Path
+import pickle
 from typing import Optional
 
-# Global indexes for fast lookup
-_etymology_db_index: dict = {}
-_cognet_index: dict = {}
+# Paths
+RAW_WIKTEXTRACT_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
+ETYMOLOGY_INDEX_PATH = "/mnt/pgdata/morphlex/data/etymology_index.pkl"
+WIKTEXTRACT_INDEX_PATH = "/mnt/pgdata/morphlex/data/wiktextract_index.pkl"
+
+# Target languages for cross-links
+TARGET_LANGUAGES = ['ar', 'he', 'ja', 'zh', 'de', 'tr', 'sa', 'la', 'grc', 'ine-pro']
+
+# Global indexes
+_etymology_index: dict = {}
+_wiktextract_index: dict = {}
 _indexes_loaded: bool = False
 
-# Data paths on VM
-ETYMOLOGY_DB_PATH = "/mnt/pgdata/morphlex/data/etymology-db/"
-COGNET_PATH = "/mnt/pgdata/morphlex/data/CogNet/"
 
-
-def _parse_json_file(filepath: str) -> list[dict]:
-    """Parse a JSON file containing etymology/cognate entries."""
-    entries = []
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                entries = data
-            elif isinstance(data, dict):
-                # Handle dict with 'entries', 'relations', 'cognates', or 'data' key
-                for key in ('entries', 'relations', 'cognates', 'data'):
-                    if key in data:
-                        entries = data[key]
-                        break
-    except (json.JSONDecodeError, IOError) as e:
-        pass
-    return entries
-
-
-def _parse_tsv_file(filepath: str) -> list[dict]:
-    """Parse a TSV/CSV file containing etymology/cognate entries."""
-    entries = []
-    delimiter = '\t' if filepath.endswith('.tsv') else ','
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            # Try to detect header
-            sample = f.read(4096)
-            f.seek(0)
-            has_header = csv.Sniffer().has_header(sample) if sample.strip() else True
-
-            reader = csv.DictReader(f, delimiter=delimiter)
-            for row in reader:
-                entry = {}
-                for key, value in row.items():
-                    if key is None:
-                        continue
-                    key_lower = key.lower().strip()
-                    # Normalize field names
-                    if 'source' in key_lower and 'word' in key_lower:
-                        entry['source_word'] = value
-                    elif 'target' in key_lower and 'word' in key_lower:
-                        entry['target_word'] = value
-                    elif 'source' in key_lower and 'lang' in key_lower:
-                        entry['source_language'] = value
-                    elif 'target' in key_lower and 'lang' in key_lower:
-                        entry['target_language'] = value
-                    elif 'relation' in key_lower or key_lower == 'type':
-                        entry['relation_type'] = value
-                    elif key_lower in ('word1', 'word_1', 'form1'):
-                        entry['source_word'] = value
-                    elif key_lower in ('word2', 'word_2', 'form2'):
-                        entry['target_word'] = value
-                    elif key_lower in ('lang1', 'lang_1', 'language1', 'lang'):
-                        entry['source_language'] = value
-                    elif key_lower in ('lang2', 'lang_2', 'language2'):
-                        entry['target_language'] = value
-                    else:
-                        entry[key_lower] = value
-                if entry.get('source_word') or entry.get('target_word'):
-                    entries.append(entry)
-    except (csv.Error, IOError) as e:
-        pass
-    return entries
-
-
-def _load_etymology_db() -> dict:
+def build_etymology_index(force_rebuild: bool = False) -> int:
     """
-    Load etymology-db into an index keyed by (word, language).
-    Returns dict mapping (word, lang) -> list of relationships.
-    """
-    index = {}
+    Build etymology index from raw Wiktextract JSONL dump.
 
-    if not os.path.exists(ETYMOLOGY_DB_PATH):
-        return index
-
-    for root, dirs, files in os.walk(ETYMOLOGY_DB_PATH):
-        for filename in files:
-            filepath = os.path.join(root, filename)
-            entries = []
-
-            if filename.endswith('.json'):
-                entries = _parse_json_file(filepath)
-            elif filename.endswith(('.csv', '.tsv', '.txt')):
-                entries = _parse_tsv_file(filepath)
-
-            for entry in entries:
-                source_word = entry.get('source_word', '').lower().strip()
-                target_word = entry.get('target_word', '').lower().strip()
-                source_lang = entry.get('source_language', '').lower().strip()
-                target_lang = entry.get('target_language', '').lower().strip()
-                relation = entry.get('relation_type', 'related').lower().strip()
-
-                # Index by source word
-                if source_word and source_lang:
-                    key = (source_word, source_lang)
-                    if key not in index:
-                        index[key] = []
-                    index[key].append({
-                        'relation_type': relation,
-                        'related_word': target_word,
-                        'related_language': target_lang,
-                        'source': 'etymology-db'
-                    })
-
-                # Also index by target word (reverse relationship)
-                if target_word and target_lang:
-                    key = (target_word, target_lang)
-                    if key not in index:
-                        index[key] = []
-                    # Reverse the relation if applicable
-                    reverse_relation = relation
-                    if relation == 'derived':
-                        reverse_relation = 'derived_from'
-                    elif relation == 'derived_from':
-                        reverse_relation = 'derived'
-                    elif relation == 'borrowed':
-                        reverse_relation = 'borrowed_from'
-                    elif relation == 'borrowed_from':
-                        reverse_relation = 'borrowed'
-
-                    index[key].append({
-                        'relation_type': reverse_relation,
-                        'related_word': source_word,
-                        'related_language': source_lang,
-                        'source': 'etymology-db'
-                    })
-
-    return index
-
-
-def _load_cognet() -> dict:
-    """
-    Load CogNet cognate pairs into an index keyed by (word, language).
-    Returns dict mapping (word, lang) -> list of cognate relationships.
-    """
-    index = {}
-
-    if not os.path.exists(COGNET_PATH):
-        return index
-
-    for root, dirs, files in os.walk(COGNET_PATH):
-        for filename in files:
-            filepath = os.path.join(root, filename)
-
-            if filename.endswith('.json'):
-                entries = _parse_json_file(filepath)
-            elif filename.endswith(('.csv', '.tsv', '.txt')):
-                entries = _parse_tsv_file(filepath)
-            else:
-                continue
-
-            for entry in entries:
-                word1 = entry.get('word1', entry.get('source_word', entry.get('form1', ''))).lower().strip()
-                word2 = entry.get('word2', entry.get('target_word', entry.get('form2', ''))).lower().strip()
-                lang1 = entry.get('lang1', entry.get('language1', entry.get('source_language', ''))).lower().strip()
-                lang2 = entry.get('lang2', entry.get('language2', entry.get('target_language', ''))).lower().strip()
-
-                if word1 and lang1 and word2 and lang2:
-                    # Add both directions for cognates (symmetric relationship)
-                    key1 = (word1, lang1)
-                    key2 = (word2, lang2)
-
-                    if key1 not in index:
-                        index[key1] = []
-                    index[key1].append({
-                        'relation_type': 'cognate',
-                        'related_word': word2,
-                        'related_language': lang2,
-                        'source': 'cognet'
-                    })
-
-                    if key2 not in index:
-                        index[key2] = []
-                    index[key2].append({
-                        'relation_type': 'cognate',
-                        'related_word': word1,
-                        'related_language': lang1,
-                        'source': 'cognet'
-                    })
-
-    return index
-
-
-def build_etymology_index() -> tuple[int, int]:
-    """
-    Pre-load both etymology-db and CogNet databases into memory for fast lookup.
-    Call this once at startup for better performance on repeated queries.
-
-    Returns:
-        Tuple of (etymology_db_count, cognet_count)
-    """
-    global _etymology_db_index, _cognet_index, _indexes_loaded
-
-    _etymology_db_index = _load_etymology_db()
-    _cognet_index = _load_cognet()
-    _indexes_loaded = True
-
-    return len(_etymology_db_index), len(_cognet_index)
-
-
-def get_etymological_ancestors(word: str, language: str, max_depth: int = 5) -> list[dict]:
-    """
-    Find etymological ancestors (words this word derived from).
+    Streams the 2.4GB JSONL and extracts etymology_templates for English entries.
+    Saves to /mnt/pgdata/morphlex/data/etymology_index.pkl
 
     Args:
-        word: The word to look up
-        language: The language code (e.g., 'en', 'de', 'fr')
-        max_depth: Maximum depth of ancestor chain to follow
+        force_rebuild: If True, rebuild even if index exists
 
     Returns:
-        List of dicts with ancestor information, ordered from closest to furthest
+        Number of English entries with etymology data
     """
-    global _etymology_db_index, _indexes_loaded
+    global _etymology_index
 
-    if not _indexes_loaded:
-        build_etymology_index()
+    # Check if index already exists
+    if os.path.exists(ETYMOLOGY_INDEX_PATH) and not force_rebuild:
+        print(f"Etymology index already exists at {ETYMOLOGY_INDEX_PATH}")
+        print("Loading existing index...")
+        with open(ETYMOLOGY_INDEX_PATH, 'rb') as f:
+            _etymology_index = pickle.load(f)
+        return len(_etymology_index)
+
+    if not os.path.exists(RAW_WIKTEXTRACT_PATH):
+        print(f"ERROR: Raw Wiktextract file not found: {RAW_WIKTEXTRACT_PATH}")
+        return 0
+
+    print(f"=== BUILDING ETYMOLOGY INDEX ===")
+    print(f"Input: {RAW_WIKTEXTRACT_PATH}")
+    print(f"Output: {ETYMOLOGY_INDEX_PATH}")
+    print()
+
+    _etymology_index = {}
+    line_count = 0
+    english_count = 0
+
+    print(f"Streaming {RAW_WIKTEXTRACT_PATH}...")
+
+    with gzip.open(RAW_WIKTEXTRACT_PATH, 'rt', encoding='utf-8') as f:
+        for line in f:
+            line_count += 1
+
+            if line_count % 100000 == 0:
+                print(f"  Processed {line_count:,} lines, {english_count:,} entries with etymology...")
+
+            try:
+                entry = json.loads(line.strip())
+            except json.JSONDecodeError:
+                continue
+
+            # Only process English entries
+            lang_code = entry.get('lang_code', '')
+            if lang_code != 'en':
+                continue
+
+            word = entry.get('word', '').lower().strip()
+            if not word:
+                continue
+
+            # Check for etymology data
+            etymology_templates = entry.get('etymology_templates', [])
+            etymology_text = entry.get('etymology_text', '')
+
+            # Skip if no etymology data
+            if not etymology_templates and not etymology_text:
+                continue
+
+            # Store etymology data
+            if word not in _etymology_index:
+                _etymology_index[word] = {
+                    'templates': [],
+                    'text': ''
+                }
+
+            # Add templates (avoid duplicates)
+            existing_templates = {
+                (t.get('name'), t.get('args', {}).get('1'), t.get('args', {}).get('2'))
+                for t in _etymology_index[word]['templates']
+            }
+
+            for tmpl in etymology_templates:
+                tmpl_key = (tmpl.get('name'), tmpl.get('args', {}).get('1'), tmpl.get('args', {}).get('2'))
+                if tmpl_key not in existing_templates:
+                    _etymology_index[word]['templates'].append(tmpl)
+                    existing_templates.add(tmpl_key)
+
+            # Keep the longest etymology text
+            if len(etymology_text) > len(_etymology_index[word]['text']):
+                _etymology_index[word]['text'] = etymology_text
+
+            english_count += 1
+
+    print(f"\nDone! Processed {line_count:,} lines")
+    print(f"English entries with etymology: {len(_etymology_index):,}")
+
+    # Save index
+    print(f"\nSaving to {ETYMOLOGY_INDEX_PATH}...")
+    with open(ETYMOLOGY_INDEX_PATH, 'wb') as f:
+        pickle.dump(_etymology_index, f)
+
+    file_size = os.path.getsize(ETYMOLOGY_INDEX_PATH) / (1024 * 1024)
+    print(f"Saved {file_size:.1f}MB etymology index")
+
+    return len(_etymology_index)
+
+
+def _load_indexes():
+    """Load both etymology and wiktextract indexes."""
+    global _etymology_index, _wiktextract_index, _indexes_loaded
+
+    if _indexes_loaded:
+        return
+
+    # Load etymology index
+    if os.path.exists(ETYMOLOGY_INDEX_PATH):
+        with open(ETYMOLOGY_INDEX_PATH, 'rb') as f:
+            _etymology_index = pickle.load(f)
+    else:
+        print(f"WARNING: Etymology index not found at {ETYMOLOGY_INDEX_PATH}")
+        print("Run build_etymology_index() first.")
+        _etymology_index = {}
+
+    # Load wiktextract index for cross-language lookups
+    if os.path.exists(WIKTEXTRACT_INDEX_PATH):
+        with open(WIKTEXTRACT_INDEX_PATH, 'rb') as f:
+            _wiktextract_index = pickle.load(f)
+    else:
+        _wiktextract_index = {}
+
+    _indexes_loaded = True
+
+
+def get_ancestors(concept: str) -> list[dict]:
+    """
+    Extract ancestor chain from etymology_templates.
+
+    Looks for 'inh' (inherited) and 'der' (derived) entries.
+    Builds chain: English -> Middle English -> Old English -> Proto-Germanic -> PIE
+
+    Args:
+        concept: English word to look up
+
+    Returns:
+        List of dicts: {"lang": str, "word": str, "relation": str}
+    """
+    _load_indexes()
+
+    word = concept.lower().strip()
+    if word not in _etymology_index:
+        return []
 
     ancestors = []
-    visited = set()
-    queue = [(word.lower().strip(), language.lower().strip(), 0)]
+    templates = _etymology_index[word].get('templates', [])
 
-    while queue:
-        current_word, current_lang, depth = queue.pop(0)
+    # Track seen to avoid duplicates
+    seen = set()
 
-        if depth > max_depth:
-            continue
+    for tmpl in templates:
+        name = tmpl.get('name', '')
+        args = tmpl.get('args', {})
 
-        key = (current_word, current_lang)
-        if key in visited:
-            continue
-        visited.add(key)
+        # inh = inherited, der = derived, bor = borrowed, slb = semi-learned borrowing
+        if name in ('inh', 'inherited', 'der', 'derived', 'bor', 'borrowed', 'slb', 'inh+'):
+            lang_code = args.get('1', args.get('2', ''))
+            source_word = args.get('2', args.get('3', args.get('4', '')))
 
-        if key in _etymology_db_index:
-            for rel in _etymology_db_index[key]:
-                if rel['relation_type'] in ('derived_from', 'borrowed_from', 'inherited_from'):
-                    ancestor = {
-                        'word': rel['related_word'],
-                        'language': rel['related_language'],
-                        'relation_type': rel['relation_type'],
-                        'depth': depth + 1,
-                        'source': rel['source']
-                    }
-                    ancestors.append(ancestor)
+            # Sometimes the structure is different
+            if not source_word:
+                source_word = args.get('alt', args.get('t', ''))
 
-                    if depth + 1 < max_depth:
-                        queue.append((rel['related_word'], rel['related_language'], depth + 1))
+            if lang_code and source_word:
+                key = (lang_code, source_word)
+                if key not in seen:
+                    seen.add(key)
+                    relation = 'inherited' if name.startswith('inh') else 'derived' if name.startswith('der') else 'borrowed'
+                    ancestors.append({
+                        'lang': lang_code,
+                        'word': source_word,
+                        'relation': relation
+                    })
 
     return ancestors
 
 
-def get_cognates(word: str, language: str) -> list[dict]:
+def get_cognates(concept: str) -> list[dict]:
     """
-    Find cognates of a word in other languages.
+    Extract cognates from etymology_templates.
+
+    Looks for 'cog' (cognate) entries and groups by language.
 
     Args:
-        word: The word to look up
-        language: The language code
+        concept: English word to look up
 
     Returns:
-        List of dicts with cognate information
+        List of dicts: {"lang": str, "word": str}
     """
-    global _cognet_index, _indexes_loaded
+    _load_indexes()
 
-    if not _indexes_loaded:
-        build_etymology_index()
+    word = concept.lower().strip()
+    if word not in _etymology_index:
+        return []
 
     cognates = []
-    key = (word.lower().strip(), language.lower().strip())
+    templates = _etymology_index[word].get('templates', [])
 
-    if key in _cognet_index:
-        for rel in _cognet_index[key]:
-            if rel['relation_type'] == 'cognate':
-                cognates.append({
-                    'word': rel['related_word'],
-                    'language': rel['related_language'],
-                    'relation_type': 'cognate',
-                    'source': rel['source']
-                })
+    seen = set()
+
+    for tmpl in templates:
+        name = tmpl.get('name', '')
+        args = tmpl.get('args', {})
+
+        # cog = cognate, ncog = non-cognate comparison, m = mention
+        if name in ('cog', 'cognate', 'ncog', 'm', 'mention', 'l', 'link'):
+            lang_code = args.get('1', '')
+            cog_word = args.get('2', args.get('3', ''))
+
+            if not cog_word:
+                cog_word = args.get('alt', args.get('t', ''))
+
+            if lang_code and cog_word:
+                key = (lang_code, cog_word)
+                if key not in seen:
+                    seen.add(key)
+                    cognates.append({
+                        'lang': lang_code,
+                        'word': cog_word
+                    })
 
     return cognates
 
 
-def get_derivation_chain(word: str, language: str) -> list[dict]:
+def get_cross_links(concept: str) -> dict:
     """
-    Build the complete derivation chain for a word (both ancestors and descendants).
+    Find cross-language links for target languages.
+
+    Checks if the concept has translations in the wiktextract index
+    for our 10 target languages.
 
     Args:
-        word: The word to look up
-        language: The language code
+        concept: English word to look up
 
     Returns:
-        List of dicts representing the derivation chain
+        Dict mapping language code to translation: {"de": "Wasser", "la": "aqua", ...}
     """
-    global _etymology_db_index, _indexes_loaded
+    _load_indexes()
 
-    if not _indexes_loaded:
-        build_etymology_index()
+    word = concept.lower().strip()
+    cross_links = {}
 
-    chain = []
-    key = (word.lower().strip(), language.lower().strip())
+    # Check wiktextract index for translations in target languages
+    for lang in TARGET_LANGUAGES:
+        if lang in _wiktextract_index:
+            lang_entries = _wiktextract_index[lang]
+            # Look for entries that translate to this English word
+            # The index structure is {lang: {word: data}}
+            if isinstance(lang_entries, dict):
+                for foreign_word, data in lang_entries.items():
+                    # Check if this word's translations include our concept
+                    translations = data.get('translations', []) if isinstance(data, dict) else []
+                    for trans in translations:
+                        if isinstance(trans, dict):
+                            trans_word = trans.get('word', '').lower()
+                            trans_lang = trans.get('lang_code', trans.get('code', ''))
+                            if trans_word == word and trans_lang == 'en':
+                                cross_links[lang] = foreign_word
+                                break
+                    if lang in cross_links:
+                        break
 
-    if key in _etymology_db_index:
-        for rel in _etymology_db_index[key]:
-            chain.append({
-                'word': rel['related_word'],
-                'language': rel['related_language'],
-                'relation_type': rel['relation_type'],
-                'source': rel['source']
-            })
+    # Also check etymology templates for direct references
+    if word in _etymology_index:
+        templates = _etymology_index[word].get('templates', [])
+        for tmpl in templates:
+            args = tmpl.get('args', {})
+            lang_code = args.get('1', '')
+            foreign_word = args.get('2', args.get('3', ''))
 
-    return chain
+            if lang_code in TARGET_LANGUAGES and foreign_word and lang_code not in cross_links:
+                cross_links[lang_code] = foreign_word
+
+    return cross_links
 
 
-def enrich_etymology(word: str, language: str) -> list[dict]:
+def enrich_etymology(concept: str) -> dict:
     """
-    Find all etymology relationships for a given word and language.
-
-    Matches the standard adapter pattern - returns list of dicts with standardized fields.
+    Get full etymology enrichment for an English concept.
 
     Args:
-        word: The word to look up
-        language: The language code (e.g., 'en', 'de', 'fr')
+        concept: English word to look up
 
     Returns:
-        List of dicts with keys:
-        - relation_type: 'derived', 'borrowed', 'cognate', 'inherited', etc.
-        - related_word: The related word
-        - related_language: Language of the related word
-        - source: 'etymology-db' or 'cognet'
+        Dict with structure:
+        {
+            "concept": str,
+            "ancestors": [{"lang": str, "word": str, "relation": str}],
+            "cognates": [{"lang": str, "word": str}],
+            "cross_links": {"de": "Wasser", "la": "aqua", ...}
+        }
     """
-    global _etymology_db_index, _cognet_index, _indexes_loaded
-
-    if not _indexes_loaded:
-        build_etymology_index()
-
-    results = []
-    key = (word.lower().strip(), language.lower().strip())
-
-    # Look up in etymology-db index
-    if key in _etymology_db_index:
-        results.extend(_etymology_db_index[key])
-
-    # Look up in CogNet index
-    if key in _cognet_index:
-        results.extend(_cognet_index[key])
-
-    # Deduplicate results
-    seen = set()
-    unique_results = []
-    for r in results:
-        signature = (r['relation_type'], r['related_word'], r['related_language'], r['source'])
-        if signature not in seen:
-            seen.add(signature)
-            unique_results.append(r)
-
-    return unique_results
-
-
-def test_etymology() -> dict:
-    """
-    Test etymology enrichment with 5 words across multiple languages.
-
-    Returns:
-        Dict with test results including counts and sample data
-    """
-    print("=== ETYMOLOGY ENRICHER TEST ===")
-    print(f"Etymology DB path: {ETYMOLOGY_DB_PATH}")
-    print(f"CogNet path: {COGNET_PATH}")
-    print(f"Etymology DB exists: {os.path.exists(ETYMOLOGY_DB_PATH)}")
-    print(f"CogNet exists: {os.path.exists(COGNET_PATH)}")
-
-    # List directory contents if they exist
-    if os.path.exists(ETYMOLOGY_DB_PATH):
-        files = list(Path(ETYMOLOGY_DB_PATH).rglob('*'))[:10]
-        print(f"Etymology DB files (first 10): {[str(f) for f in files]}")
-
-    if os.path.exists(COGNET_PATH):
-        files = list(Path(COGNET_PATH).rglob('*'))[:10]
-        print(f"CogNet files (first 10): {[str(f) for f in files]}")
-
-    # Build indexes
-    print("\nBuilding indexes...")
-    etym_count, cognet_count = build_etymology_index()
-    print(f"Etymology DB entries: {etym_count}")
-    print(f"CogNet entries: {cognet_count}")
-
-    # Test words across multiple languages
-    test_cases = [
-        ('water', 'en'),      # English - common word with PIE root
-        ('wasser', 'de'),     # German - cognate of water
-        ('aqua', 'la'),       # Latin - different PIE root
-        ('mother', 'en'),     # English - universal concept
-        ('pater', 'la'),      # Latin - father
-    ]
-
-    results = {
-        'index_counts': {
-            'etymology_db': etym_count,
-            'cognet': cognet_count
-        },
-        'test_results': []
+    return {
+        "concept": concept,
+        "ancestors": get_ancestors(concept),
+        "cognates": get_cognates(concept),
+        "cross_links": get_cross_links(concept)
     }
 
-    print("\n=== TEST RESULTS ===")
-    for word, lang in test_cases:
-        print(f"\n--- {word} ({lang}) ---")
 
-        # Get all enrichments
-        enrichments = enrich_etymology(word, lang)
-        ancestors = get_etymological_ancestors(word, lang)
-        cognates = get_cognates(word, lang)
-        chain = get_derivation_chain(word, lang)
+def test_etymology():
+    """
+    Test etymology enrichment with 5 words.
 
-        test_result = {
-            'word': word,
-            'language': lang,
-            'enrichments_count': len(enrichments),
-            'ancestors_count': len(ancestors),
-            'cognates_count': len(cognates),
-            'chain_count': len(chain)
-        }
+    Tests: water, mother, book, king, star
+    """
+    print("=== ETYMOLOGY ENRICHER TEST ===")
+    print(f"Etymology index path: {ETYMOLOGY_INDEX_PATH}")
+    print(f"Wiktextract index path: {WIKTEXTRACT_INDEX_PATH}")
+    print()
 
-        print(f"  Total enrichments: {len(enrichments)}")
+    # Check files exist
+    print(f"Etymology index exists: {os.path.exists(ETYMOLOGY_INDEX_PATH)}")
+    print(f"Wiktextract index exists: {os.path.exists(WIKTEXTRACT_INDEX_PATH)}")
+
+    if os.path.exists(ETYMOLOGY_INDEX_PATH):
+        size = os.path.getsize(ETYMOLOGY_INDEX_PATH) / (1024 * 1024)
+        print(f"Etymology index size: {size:.1f}MB")
+
+    print()
+
+    # Load indexes
+    _load_indexes()
+    print(f"Etymology index entries: {len(_etymology_index):,}")
+    print()
+
+    # Test words
+    test_words = ['water', 'mother', 'book', 'king', 'star']
+
+    print("=== TEST RESULTS ===")
+
+    for word in test_words:
+        print(f"\n--- {word} ---")
+
+        result = enrich_etymology(word)
+
+        ancestors = result['ancestors']
+        cognates = result['cognates']
+        cross_links = result['cross_links']
+
         print(f"  Ancestors: {len(ancestors)}")
         print(f"  Cognates: {len(cognates)}")
-        print(f"  Derivation chain: {len(chain)}")
+        print(f"  Cross-links: {len(cross_links)}")
 
-        if enrichments:
-            print(f"  Sample enrichment: {enrichments[0]}")
-            test_result['sample'] = enrichments[0]
+        # Show ancestor chain
+        if ancestors:
+            print(f"  Ancestor chain:")
+            for anc in ancestors:
+                print(f"    -> {anc['lang']}: {anc['word']} ({anc['relation']})")
 
-        results['test_results'].append(test_result)
+        # Show some cognates
+        if cognates:
+            print(f"  Sample cognates (first 5):")
+            for cog in cognates[:5]:
+                print(f"    {cog['lang']}: {cog['word']}")
+
+        # Show cross-links
+        if cross_links:
+            print(f"  Cross-links: {cross_links}")
 
     print("\n=== TEST COMPLETE ===")
-    return results
 
 
 if __name__ == '__main__':
-    test_etymology()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == '--build':
+        build_etymology_index(force_rebuild=True)
+    else:
+        test_etymology()

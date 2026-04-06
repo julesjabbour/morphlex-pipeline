@@ -1,21 +1,37 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== ETYMOLOGY ENRICHER TEST ==="
+echo "=== ENG-015 ETYMOLOGY ENRICHER (Wiktextract) ==="
+echo "Etymology index: /mnt/pgdata/morphlex/data/etymology_index.pkl"
+echo "Raw Wiktextract: /mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
+echo ""
 
+# Check if etymology index exists
+if [ -f "/mnt/pgdata/morphlex/data/etymology_index.pkl" ]; then
+    echo "Etymology index already exists:"
+    ls -lh /mnt/pgdata/morphlex/data/etymology_index.pkl
+    echo ""
+else
+    echo "Etymology index does not exist. Building now..."
+    echo "This will stream the 2.4GB raw Wiktextract dump (may take a few minutes)..."
+    echo ""
+    python3 -c "
+import sys
+sys.path.insert(0, '/mnt/pgdata/morphlex')
+from pipeline.etymology_enricher import build_etymology_index
+build_etymology_index(force_rebuild=False)
+"
+    echo ""
+fi
+
+# Run test
+echo "=== RUNNING ETYMOLOGY TEST ==="
 python3 -c "
 import sys
 sys.path.insert(0, '/mnt/pgdata/morphlex')
-
 from pipeline.etymology_enricher import test_etymology
-results = test_etymology()
+test_etymology()
+"
 
-print()
-print('=== SUMMARY ===')
-print(f'Etymology DB index entries: {results[\"index_counts\"][\"etymology_db\"]}')
-print(f'CogNet index entries: {results[\"index_counts\"][\"cognet\"]}')
-total_hits = sum(r['enrichments_count'] for r in results['test_results'])
-print(f'Total enrichments found across test words: {total_hits}')
-" 2>&1
-
+echo ""
 echo "=== COMPLETE ==="
