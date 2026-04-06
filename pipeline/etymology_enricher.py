@@ -189,8 +189,8 @@ def _load_indexes():
         with open(WIKTEXTRACT_INDEX_PATH, 'rb') as f:
             _wiktextract_index = pickle.load(f)
 
-        # Build forward translation index: english_word -> {lang: foreign_word}
-        # Fix 1 (Polysemy): Prefer noun senses to avoid verb/adjective polysemy errors
+        # Build forward translation index: english_word -> {lang: (foreign_word, pos)}
+        # Fix 1 (Polysemy): Prefer noun senses - nouns always replace non-nouns
         # Fix 2 (Script validation): Filter garbage entries with wrong scripts
         _forward_translations = {}
         for lang, words in _wiktextract_index.items():
@@ -199,28 +199,20 @@ def _load_indexes():
                 if not _valid_script(lang, foreign_word):
                     continue
 
-                # Collect all English words from concepts, preferring noun senses
-                noun_matches = []
-                other_matches = []
                 for concept in concepts:
-                    if isinstance(concept, dict):
-                        eng = concept.get('english_word', '')
-                        pos = concept.get('pos', '')
-                        if eng:
-                            if pos == 'noun':
-                                noun_matches.append(eng)
-                            else:
-                                other_matches.append(eng)
-                    else:
-                        other_matches.append(str(concept))
-
-                # Process noun matches first, then fallback to others
-                for eng in noun_matches + other_matches:
+                    eng = concept.get('english_word', '') if isinstance(concept, dict) else str(concept)
+                    pos = concept.get('pos', '') if isinstance(concept, dict) else ''
                     if eng:
                         if eng not in _forward_translations:
                             _forward_translations[eng] = {}
                         if lang not in _forward_translations[eng]:
-                            _forward_translations[eng][lang] = foreign_word
+                            # First entry for this (english_word, lang) — take it
+                            _forward_translations[eng][lang] = (foreign_word, pos)
+                        else:
+                            # Already have an entry — replace ONLY if new one is noun and old one isn't
+                            existing_pos = _forward_translations[eng][lang][1]
+                            if pos == 'noun' and existing_pos != 'noun':
+                                _forward_translations[eng][lang] = (foreign_word, pos)
     else:
         _wiktextract_index = {}
         _forward_translations = {}
@@ -347,8 +339,8 @@ def get_cross_links(concept: str) -> dict:
     """
     if _forward_translations is None:
         load_indexes()
-    return {lang: fw for lang, fw in _forward_translations.get(concept.lower().strip(), {}).items()
-            if lang in TARGET_LANGUAGES and fw and fw != '-'}
+    return {lang: fw[0] for lang, fw in _forward_translations.get(concept.lower().strip(), {}).items()
+            if lang in TARGET_LANGUAGES and fw[0] and fw[0] != '-'}
 
 
 def enrich_etymology(concept: str) -> dict:
