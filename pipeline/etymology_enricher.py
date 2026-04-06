@@ -157,6 +157,11 @@ def _load_indexes():
     _indexes_loaded = True
 
 
+def load_indexes():
+    """Public wrapper to load indexes."""
+    _load_indexes()
+
+
 def get_ancestors(concept: str) -> list[dict]:
     """
     Extract ancestor chain from etymology_templates.
@@ -256,6 +261,37 @@ def get_cognates(concept: str) -> list[dict]:
     return cognates
 
 
+def _is_valid_translation(word: str) -> bool:
+    """Check if a translation is valid (not garbage like '-' or empty)."""
+    if not word:
+        return False
+    # Filter out translations that are just punctuation, dashes, or empty
+    stripped = word.strip()
+    if not stripped:
+        return False
+    if stripped == '-':
+        return False
+    # Filter if it's only punctuation
+    import re
+    if re.match(r'^[\s\-–—_.,;:!?]+$', stripped):
+        return False
+    return True
+
+
+def _select_best_translation(translations: list[str]) -> Optional[str]:
+    """
+    Select the best translation from a list.
+
+    Prefers the SHORTEST valid translation (primary meanings tend to be shorter
+    than compound derivatives like "Essigmutter").
+    """
+    valid = [t for t in translations if _is_valid_translation(t)]
+    if not valid:
+        return None
+    # Return the shortest valid translation
+    return min(valid, key=len)
+
+
 def get_cross_links(concept: str) -> dict:
     """
     Find cross-language links for target languages.
@@ -273,6 +309,7 @@ def get_cross_links(concept: str) -> dict:
 
     word = concept.lower().strip()
     cross_links = {}
+    candidates_per_lang = {lang: [] for lang in TARGET_LANGUAGES}
 
     # Check wiktextract index for translations in target languages
     for lang in TARGET_LANGUAGES:
@@ -283,16 +320,20 @@ def get_cross_links(concept: str) -> dict:
             if isinstance(lang_entries, dict):
                 for foreign_word, data in lang_entries.items():
                     # Check if this word's translations include our concept
-                    translations = data.get('translations', []) if isinstance(data, dict) else []
-                    for trans in translations:
-                        if isinstance(trans, dict):
-                            trans_word = trans.get('word', '').lower()
-                            trans_lang = trans.get('lang_code', trans.get('code', ''))
-                            if trans_word == word and trans_lang == 'en':
-                                cross_links[lang] = foreign_word
-                                break
-                    if lang in cross_links:
-                        break
+                    if isinstance(data, list):
+                        # data is list of english_concept dicts
+                        for concept_data in data:
+                            if isinstance(concept_data, dict):
+                                if concept_data.get('english_word', '').lower() == word:
+                                    candidates_per_lang[lang].append(foreign_word)
+                    elif isinstance(data, dict):
+                        translations = data.get('translations', [])
+                        for trans in translations:
+                            if isinstance(trans, dict):
+                                trans_word = trans.get('word', '').lower()
+                                trans_lang = trans.get('lang_code', trans.get('code', ''))
+                                if trans_word == word and trans_lang == 'en':
+                                    candidates_per_lang[lang].append(foreign_word)
 
     # Also check etymology templates for direct references
     if word in _etymology_index:
@@ -302,8 +343,15 @@ def get_cross_links(concept: str) -> dict:
             lang_code = args.get('1', '')
             foreign_word = args.get('2', args.get('3', ''))
 
-            if lang_code in TARGET_LANGUAGES and foreign_word and lang_code not in cross_links:
-                cross_links[lang_code] = foreign_word
+            if lang_code in TARGET_LANGUAGES and foreign_word:
+                candidates_per_lang[lang_code].append(foreign_word)
+
+    # Select best translation for each language
+    for lang, candidates in candidates_per_lang.items():
+        if candidates:
+            best = _select_best_translation(candidates)
+            if best:
+                cross_links[lang] = best
 
     return cross_links
 

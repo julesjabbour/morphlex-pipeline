@@ -116,6 +116,24 @@ def build_index(
                     index[lang_code][trans_word].append(english_concept)
                     translation_count += 1
 
+            # Extract PIE (Proto-Indo-European) from etymology_templates
+            # PIE reconstructions are in etymology, not translations
+            if 'ine-pro' in target_langs:
+                for tmpl in entry.get('etymology_templates', []):
+                    args = tmpl.get('args', {})
+                    # Look for templates where arg '2' is 'ine-pro'
+                    # e.g. {'name': 'inh', 'args': {'1': 'en', '2': 'ine-pro', '3': '*wódr̥'}}
+                    if args.get('2') == 'ine-pro':
+                        pie_form = args.get('3', '').strip()
+                        if pie_form:
+                            if pie_form not in index['ine-pro']:
+                                index['ine-pro'][pie_form] = []
+                            # Avoid duplicates
+                            existing_words = [c['english_word'] for c in index['ine-pro'][pie_form]]
+                            if word not in existing_words:
+                                index['ine-pro'][pie_form].append(english_concept)
+                                translation_count += 1
+
     # Save as pickle
     print(f"\nSaving index to {output_path}...")
     with open(output_path, 'wb') as f:
