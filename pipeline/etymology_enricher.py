@@ -3,13 +3,17 @@ Etymology Enricher module for morphlex pipeline.
 
 Extracts etymology data from Wiktextract dump - ancestors, cognates, and cross-language links.
 Uses etymology_templates field for structured inh/der/cog/bor entries.
+
+Architecture:
+- Etymology index (etymology_index.pkl) = ancestor chains + cognates ONLY
+- Wiktextract translation index (wiktextract_index.pkl, 41MB) = cross-language translations ONLY
+- These two indexes serve different purposes and should not be mixed.
 """
 
 import os
 import gzip
 import json
 import pickle
-from typing import Optional
 
 # Paths
 RAW_WIKTEXTRACT_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
@@ -19,24 +23,10 @@ WIKTEXTRACT_INDEX_PATH = "/mnt/pgdata/morphlex/data/wiktextract_index.pkl"
 # Target languages for cross-links
 TARGET_LANGUAGES = ['ar', 'he', 'ja', 'zh', 'de', 'tr', 'sa', 'la', 'grc', 'ine-pro']
 
-# Script validation patterns for target languages
-# Each language has expected Unicode ranges
-SCRIPT_RANGES = {
-    'ar': (0x0600, 0x06FF),  # Arabic
-    'he': (0x0590, 0x05FF),  # Hebrew
-    'ja': [(0x3040, 0x309F), (0x30A0, 0x30FF), (0x4E00, 0x9FFF)],  # Hiragana, Katakana, CJK
-    'zh': (0x4E00, 0x9FFF),  # CJK
-    'de': (0x0000, 0x024F),  # Latin
-    'tr': (0x0000, 0x024F),  # Latin (includes Turkish chars)
-    'sa': (0x0900, 0x097F),  # Devanagari
-    'la': (0x0000, 0x024F),  # Latin
-    'grc': (0x0370, 0x03FF),  # Greek
-    'ine-pro': (0x0000, 0x024F),  # Latin (PIE reconstructions)
-}
-
 # Global indexes
 _etymology_index: dict = {}
 _wiktextract_index: dict = {}
+_forward_translations: dict = None
 _indexes_loaded: bool = False
 
 
@@ -107,12 +97,11 @@ def build_etymology_index(force_rebuild: bool = False) -> int:
             if not etymology_templates and not etymology_text:
                 continue
 
-            # Store etymology data
+            # Store etymology data (templates + text only, no translations)
             if word not in _etymology_index:
                 _etymology_index[word] = {
                     'templates': [],
-                    'text': '',
-                    'translations': {lang: [] for lang in TARGET_LANGUAGES}
+                    'text': ''
                 }
 
             # Add templates (avoid duplicates)
@@ -131,18 +120,6 @@ def build_etymology_index(force_rebuild: bool = False) -> int:
             if len(etymology_text) > len(_etymology_index[word]['text']):
                 _etymology_index[word]['text'] = etymology_text
 
-            # Extract forward translations from senses (Wiktionary's own ordering)
-            senses = entry.get('senses', [])
-            for sense in senses:
-                translations = sense.get('translations', [])
-                for trans in translations:
-                    lang_code = trans.get('lang', trans.get('code', ''))
-                    trans_word = trans.get('word', '')
-                    if lang_code in TARGET_LANGUAGES and trans_word:
-                        # Preserve order: first sense first, first translation first
-                        if trans_word not in _etymology_index[word]['translations'][lang_code]:
-                            _etymology_index[word]['translations'][lang_code].append(trans_word)
-
             english_count += 1
 
     print(f"\nDone! Processed {line_count:,} lines")
@@ -160,27 +137,48 @@ def build_etymology_index(force_rebuild: bool = False) -> int:
 
 
 def _load_indexes():
-    """Load both etymology and wiktextract indexes."""
-    global _etymology_index, _wiktextract_index, _indexes_loaded
+    """Load etymology index, wiktextract index, and build forward translations."""
+    global _etymology_index, _wiktextract_index, _forward_translations, _indexes_loaded
 
     if _indexes_loaded:
         return
 
-    # Load etymology index
+    # Load etymology index with corruption handling
     if os.path.exists(ETYMOLOGY_INDEX_PATH):
-        with open(ETYMOLOGY_INDEX_PATH, 'rb') as f:
-            _etymology_index = pickle.load(f)
+        try:
+            with open(ETYMOLOGY_INDEX_PATH, 'rb') as f:
+                _etymology_index = pickle.load(f)
+        except (EOFError, pickle.UnpicklingError):
+            print(f"WARNING: Corrupted etymology index, rebuilding...")
+            os.remove(ETYMOLOGY_INDEX_PATH)
+            build_etymology_index()
+            with open(ETYMOLOGY_INDEX_PATH, 'rb') as f:
+                _etymology_index = pickle.load(f)
     else:
         print(f"WARNING: Etymology index not found at {ETYMOLOGY_INDEX_PATH}")
         print("Run build_etymology_index() first.")
         _etymology_index = {}
 
-    # Load wiktextract index for cross-language lookups
+    # Load wiktextract index and build forward translations
     if os.path.exists(WIKTEXTRACT_INDEX_PATH):
         with open(WIKTEXTRACT_INDEX_PATH, 'rb') as f:
             _wiktextract_index = pickle.load(f)
+
+        # Build forward translation index: english_word -> {lang: foreign_word}
+        # First foreign word per language = Wiktionary's primary translation
+        _forward_translations = {}
+        for lang, words in _wiktextract_index.items():
+            for foreign_word, concepts in words.items():
+                for concept in concepts:
+                    eng = concept.get('english_word', '') if isinstance(concept, dict) else str(concept)
+                    if eng:
+                        if eng not in _forward_translations:
+                            _forward_translations[eng] = {}
+                        if lang not in _forward_translations[eng]:
+                            _forward_translations[eng][lang] = foreign_word
     else:
         _wiktextract_index = {}
+        _forward_translations = {}
 
     _indexes_loaded = True
 
@@ -289,74 +287,12 @@ def get_cognates(concept: str) -> list[dict]:
     return cognates
 
 
-def _is_valid_translation(word: str) -> bool:
-    """Check if a translation is valid (not garbage like '-' or empty)."""
-    if not word:
-        return False
-    # Filter out translations that are just punctuation, dashes, or empty
-    stripped = word.strip()
-    if not stripped:
-        return False
-    if stripped == '-':
-        return False
-    # Filter if it's only punctuation
-    import re
-    if re.match(r'^[\s\-–—_.,;:!?]+$', stripped):
-        return False
-    return True
-
-
-def _is_valid_script(word: str, lang_code: str) -> bool:
-    """
-    Check if a word contains characters from the expected script for the language.
-    Filters out e.g. Cyrillic characters in a Chinese field.
-    """
-    if lang_code not in SCRIPT_RANGES:
-        return True  # No validation for unknown languages
-
-    ranges = SCRIPT_RANGES[lang_code]
-
-    # Handle multiple ranges (e.g., Japanese with hiragana, katakana, CJK)
-    if isinstance(ranges, list):
-        for char in word:
-            if char.isspace() or not char.isalpha():
-                continue
-            code_point = ord(char)
-            # Check if char is in any valid range
-            in_valid_range = any(r[0] <= code_point <= r[1] for r in ranges)
-            if not in_valid_range:
-                return False
-        return True
-    else:
-        low, high = ranges
-        for char in word:
-            if char.isspace() or not char.isalpha():
-                continue
-            code_point = ord(char)
-            if not (low <= code_point <= high):
-                return False
-        return True
-
-
-def _select_first_valid_translation(translations: list[str], lang_code: str) -> Optional[str]:
-    """
-    Select the first valid translation from the ordered list.
-
-    Wiktionary's order is semantic: first = most common/primary translation.
-    Filters out empty, "-", and wrong-script entries.
-    """
-    for t in translations:
-        if _is_valid_translation(t) and _is_valid_script(t, lang_code):
-            return t
-    return None
-
-
 def get_cross_links(concept: str) -> dict:
     """
     Find cross-language links for target languages.
 
-    Uses forward translations from the etymology index (extracted from English entries).
-    Takes the FIRST valid translation per language (Wiktionary's semantic ordering).
+    Uses forward translations built from wiktextract_index.pkl (41MB).
+    First foreign word per language = Wiktionary's primary translation.
 
     Args:
         concept: English word to look up
@@ -364,34 +300,10 @@ def get_cross_links(concept: str) -> dict:
     Returns:
         Dict mapping language code to translation: {"de": "König", "la": "rex", ...}
     """
-    _load_indexes()
-
-    word = concept.lower().strip()
-    cross_links = {}
-
-    # Get forward translations from etymology index
-    if word not in _etymology_index:
-        return cross_links
-
-    translations = _etymology_index[word].get('translations', {})
-
-    for lang in TARGET_LANGUAGES:
-        lang_data = translations.get(lang)
-        if not lang_data:
-            continue
-
-        # Handle both list format and string format
-        if isinstance(lang_data, list):
-            # List of translations - take first valid one
-            best = _select_first_valid_translation(lang_data, lang)
-            if best:
-                cross_links[lang] = best
-        elif isinstance(lang_data, str):
-            # Single string translation
-            if _is_valid_translation(lang_data) and _is_valid_script(lang_data, lang):
-                cross_links[lang] = lang_data
-
-    return cross_links
+    if _forward_translations is None:
+        load_indexes()
+    return {lang: fw for lang, fw in _forward_translations.get(concept.lower().strip(), {}).items()
+            if lang in TARGET_LANGUAGES and fw and fw != '-'}
 
 
 def enrich_etymology(concept: str) -> dict:
