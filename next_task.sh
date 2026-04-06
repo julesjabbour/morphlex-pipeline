@@ -4,11 +4,12 @@
 
 echo "=== ANCIENT GREEK ADAPTER TEST (ENG-019) ==="
 
-cd /home/user/morphlex-pipeline
+cd /mnt/pgdata/morphlex
+source /mnt/pgdata/morphlex/venv/bin/activate
 
 python3 << 'EOF'
 import sys
-sys.path.insert(0, '/home/user/morphlex-pipeline')
+sys.path.insert(0, '/mnt/pgdata/morphlex')
 
 from analyzers.greek import analyze_greek
 
@@ -40,5 +41,5 @@ else:
     print("No results returned - check if Morpheus is running on port 1315")
 
 print()
-print("=== TEST COMPLETE ==="
+print("=== TEST COMPLETE ===")
 EOF
