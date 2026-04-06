@@ -1,5 +1,5 @@
 #!/bin/bash
-FLAG="/tmp/.eng015_final"
+FLAG="/tmp/.eng015_polysemy_fix"
 if [ -f "$FLAG" ]; then
     echo "=== ALREADY COMPLETE ==="
     exit 0
@@ -10,10 +10,9 @@ import sys
 sys.path.insert(0, '/mnt/pgdata/morphlex')
 from pipeline.etymology_enricher import enrich_etymology, load_indexes
 load_indexes()
-print('Forward translation index built')
 for word in ['water','mother','book','king','star','sun','eye','fire','earth','house']:
     r = enrich_etymology(word)
-    print(f'{word}: ancestors={len(r[\"ancestors\"])}, cognates={len(r[\"cognates\"])}, cross_links={r[\"cross_links\"]}')
+    print(f'{word}: {r[\"cross_links\"]}')
 " 2>&1
 touch "$FLAG"
 echo "=== DONE ==="

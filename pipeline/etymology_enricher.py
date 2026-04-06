@@ -29,6 +29,31 @@ _wiktextract_index: dict = {}
 _forward_translations: dict = None
 _indexes_loaded: bool = False
 
+# Script validation patterns for languages with distinct scripts
+# Returns True if the word contains at least one character from the expected script
+def _valid_script(lang: str, word: str) -> bool:
+    """Check if word contains characters from the expected script for the language."""
+    if lang == 'zh':
+        # CJK Unified Ideographs: U+4E00-U+9FFF
+        return any('\u4e00' <= c <= '\u9fff' for c in word)
+    elif lang == 'ar':
+        # Arabic: U+0600-U+06FF
+        return any('\u0600' <= c <= '\u06ff' for c in word)
+    elif lang == 'he':
+        # Hebrew: U+0590-U+05FF
+        return any('\u0590' <= c <= '\u05ff' for c in word)
+    elif lang == 'ja':
+        # CJK or Hiragana/Katakana: U+3040-U+30FF or U+4E00-U+9FFF
+        return any(('\u3040' <= c <= '\u30ff') or ('\u4e00' <= c <= '\u9fff') for c in word)
+    elif lang == 'sa':
+        # Devanagari: U+0900-U+097F
+        return any('\u0900' <= c <= '\u097f' for c in word)
+    elif lang == 'grc':
+        # Greek: U+0370-U+03FF or Extended Greek: U+1F00-U+1FFF
+        return any(('\u0370' <= c <= '\u03ff') or ('\u1f00' <= c <= '\u1fff') for c in word)
+    # de, tr, la use Latin script - no filter needed
+    return True
+
 
 def build_etymology_index(force_rebuild: bool = False) -> int:
     """
@@ -165,12 +190,32 @@ def _load_indexes():
             _wiktextract_index = pickle.load(f)
 
         # Build forward translation index: english_word -> {lang: foreign_word}
-        # First foreign word per language = Wiktionary's primary translation
+        # Fix 1 (Polysemy): Prefer noun senses to avoid verb/adjective polysemy errors
+        # Fix 2 (Script validation): Filter garbage entries with wrong scripts
         _forward_translations = {}
         for lang, words in _wiktextract_index.items():
             for foreign_word, concepts in words.items():
+                # Script validation: reject entries with wrong script for the language
+                if not _valid_script(lang, foreign_word):
+                    continue
+
+                # Collect all English words from concepts, preferring noun senses
+                noun_matches = []
+                other_matches = []
                 for concept in concepts:
-                    eng = concept.get('english_word', '') if isinstance(concept, dict) else str(concept)
+                    if isinstance(concept, dict):
+                        eng = concept.get('english_word', '')
+                        pos = concept.get('pos', '')
+                        if eng:
+                            if pos == 'noun':
+                                noun_matches.append(eng)
+                            else:
+                                other_matches.append(eng)
+                    else:
+                        other_matches.append(str(concept))
+
+                # Process noun matches first, then fallback to others
+                for eng in noun_matches + other_matches:
                     if eng:
                         if eng not in _forward_translations:
                             _forward_translations[eng] = {}
