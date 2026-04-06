@@ -3,6 +3,7 @@
 import logging
 import os
 import pickle
+import unicodedata
 from typing import Any, Optional
 
 import psycopg2
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Path to forward translations index
 FORWARD_TRANSLATIONS_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
+
+
+def strip_diacritics(text: str) -> str:
+    """Remove diacritics/macrons from text (e.g., māter → mater)."""
+    return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
 
 
 class PipelineOrchestrator:
@@ -90,12 +96,15 @@ class PipelineOrchestrator:
 
         adapter = self.adapters[language]
 
-        # For he, sa, grc: translate English→native script first
+        # For he, sa, grc, la: translate English→native script first
         word_to_analyze = word
         if language in self.needs_translation:
             translated = self._translate_word(word, language)
             if translated:
                 word_to_analyze = translated
+                # Latin/Morpheus only accepts ASCII - strip macrons/diacritics
+                if language == 'la':
+                    word_to_analyze = strip_diacritics(word_to_analyze)
             else:
                 # No translation found - skip this word for this language
                 return []
