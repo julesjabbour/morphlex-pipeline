@@ -65,6 +65,13 @@ else:
     print("DB INSERT: SKIPPED (no results)")
 
 print("")
+la_count = len(results_by_lang.get('la', []))
+if la_count > 1:
+    print(f"=== LATIN FIX VERIFIED: {la_count} results (was 1) ===")
+else:
+    print(f"=== WARNING: Latin still showing {la_count} results ===")
+
+print("")
 if all_ok:
     print("=== ALL 11 LANGUAGES RETURNING RESULTS ===")
 else:

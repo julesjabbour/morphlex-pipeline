@@ -47,7 +47,7 @@ class PipelineOrchestrator:
         }
 
         # Languages that need English→native translation before calling adapter
-        self.needs_translation = {'he', 'sa', 'grc'}
+        self.needs_translation = {'he', 'sa', 'grc', 'la'}
 
         # Forward translations cache
         self._forward_translations: Optional[dict] = None
