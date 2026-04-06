@@ -376,12 +376,20 @@ def get_cross_links(concept: str) -> dict:
     translations = _etymology_index[word].get('translations', {})
 
     for lang in TARGET_LANGUAGES:
-        lang_translations = translations.get(lang, [])
-        if lang_translations:
-            # Take the first valid translation (Wiktionary's order = most common first)
-            best = _select_first_valid_translation(lang_translations, lang)
+        lang_data = translations.get(lang)
+        if not lang_data:
+            continue
+
+        # Handle both list format and string format
+        if isinstance(lang_data, list):
+            # List of translations - take first valid one
+            best = _select_first_valid_translation(lang_data, lang)
             if best:
                 cross_links[lang] = best
+        elif isinstance(lang_data, str):
+            # Single string translation
+            if _is_valid_translation(lang_data) and _is_valid_script(lang_data, lang):
+                cross_links[lang] = lang_data
 
     return cross_links
 
