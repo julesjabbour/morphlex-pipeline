@@ -12,6 +12,7 @@ from analyzers.german import analyze_german
 from analyzers.english import analyze_english
 from analyzers.latin import analyze_latin
 from analyzers.chinese import analyze_chinese
+from analyzers.greek import analyze_greek
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class PipelineOrchestrator:
             'en': analyze_english,
             'la': analyze_latin,
             'zh': analyze_chinese,
+            'grc': analyze_greek,
         }
 
     def analyze(self, word: str, language: str) -> list[dict]:
