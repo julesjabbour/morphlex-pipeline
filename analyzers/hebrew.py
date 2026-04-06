@@ -1,42 +1,25 @@
 """Hebrew morphological analyzer using Wiktextract data.
 
-Uses reverse lookup from Hebrew words to English concepts via translation mappings.
+Uses reverse lookup from Hebrew words to English concepts via precomputed index.
 """
 
 from typing import Optional
 
-from pipeline.wiktextract_loader import load_wiktextract
+from pipeline.wiktextract_loader import load_index
 
 
-# Module-level cache for loaded data
-_wiktextract_data: Optional[dict] = None
-_hebrew_index: Optional[dict] = None  # Hebrew word -> list of English entries
+# Module-level cache for loaded index
+_hebrew_index: Optional[dict] = None
 
 
 def _load_hebrew_data() -> None:
-    """Load Wiktextract data and build Hebrew reverse lookup index on first call."""
-    global _wiktextract_data, _hebrew_index
+    """Load precomputed Hebrew reverse lookup index on first call."""
+    global _hebrew_index
 
-    if _wiktextract_data is not None:
+    if _hebrew_index is not None:
         return
 
-    filepath = '/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz'
-    _wiktextract_data = load_wiktextract(filepath, target_langs=['he'])
-
-    # Build reverse index: Hebrew word -> list of (english_word, entry_data)
-    _hebrew_index = {}
-    for english_word, entry in _wiktextract_data.items():
-        hebrew_translations = entry.get('translations', {}).get('he', [])
-        for hebrew_word in hebrew_translations:
-            if hebrew_word not in _hebrew_index:
-                _hebrew_index[hebrew_word] = []
-            _hebrew_index[hebrew_word].append({
-                'english_word': english_word,
-                'pos': entry.get('pos', ''),
-                'definitions': entry.get('definitions', []),
-                'etymology': entry.get('etymology', []),
-                'etymology_text': entry.get('etymology_text', '')
-            })
+    _hebrew_index = load_index('he')
 
 
 def _normalize_hebrew(word: str) -> str:

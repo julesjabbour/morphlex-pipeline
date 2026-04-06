@@ -1,14 +1,43 @@
 """Wiktextract data loader for English Wiktionary dump.
 
 Streams gzipped JSONL data and extracts words, definitions, translations, and etymology.
+Also provides fast index-based lookup via precomputed pickle file.
 """
 
 import gzip
 import json
+import pickle
 from typing import Optional
 
 
 DEFAULT_TARGET_LANGS = ['ar', 'he', 'ja', 'zh', 'de', 'tr', 'sa', 'la', 'grc', 'ine-pro']
+
+# Module-level cache for precomputed index
+_cached_index: Optional[dict] = None
+_INDEX_PATH = '/mnt/pgdata/morphlex/data/wiktextract_index.pkl'
+
+
+def load_index(lang_code: str) -> dict:
+    """
+    Load precomputed reverse lookup index for a specific language.
+
+    This is MUCH faster than load_wiktextract() - loads in seconds instead of minutes.
+    The index must be built first using build_wiktextract_index.py.
+
+    Args:
+        lang_code: Language code (e.g., 'he', 'grc', 'sa')
+
+    Returns:
+        Dict mapping foreign words to list of English concept dicts:
+        {foreign_word: [{'english_word': str, 'pos': str, 'definitions': list, ...}]}
+    """
+    global _cached_index
+
+    if _cached_index is None:
+        with open(_INDEX_PATH, 'rb') as f:
+            _cached_index = pickle.load(f)
+
+    return _cached_index.get(lang_code, {})
 
 
 def load_wiktextract(

@@ -1,18 +1,15 @@
-cd /mnt/pgdata/morphlex
-
-echo "=== TASK RUNNER DIAGNOSTIC ==="
-echo "--- Cron status ---"
-crontab -l 2>&1
+cd /mnt/pgdata/morphlex && source venv/bin/activate
+echo "=== BUILDING WIKTEXTRACT INDEX ==="
+python3 pipeline/build_wiktextract_index.py
 echo ""
-echo "--- Flag files in /tmp ---"
-ls -la /tmp/.task_done_* 2>&1
-echo ""
-echo "--- Current next_task.sh hash ---"
-md5sum next_task.sh 2>&1
-echo ""
-echo "--- Any running python3 processes ---"
-ps aux | grep python3 | grep -v grep
-echo ""
-echo "--- Last 10 lines of pipeline log ---"
-tail -10 /tmp/pipeline.log 2>&1
-echo "=== DIAGNOSTIC COMPLETE ==="
+echo "=== TESTING HEBREW WITH INDEX ==="
+python3 -c "
+import sys
+sys.path.insert(0, '/mnt/pgdata/morphlex')
+from analyzers.hebrew import analyze_hebrew
+for w in ['ספר','כתב','בית','שלום','אדם']:
+    r = analyze_hebrew(w)
+    print(f'{w}: {len(r)} results')
+    if r: print(f'  -> {r[0]}')
+"
+echo "=== COMPLETE ==="
