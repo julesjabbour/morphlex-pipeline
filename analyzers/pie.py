@@ -1,95 +1,88 @@
-"""Proto-Indo-European (PIE) morphological analyzer using Wiktextract data.
+"""Proto-Indo-European (PIE) morphological analyzer using etymology_index.pkl.
 
-Uses reverse lookup from PIE reconstructed forms to English concepts via precomputed index.
-PIE data is extracted from etymology_templates, not translations.
+Uses FORWARD lookup: given an English word, find its PIE ancestors from etymology templates.
+PIE data is extracted from etymology_templates where source language is 'ine-pro'.
 """
 
+import os
+import pickle
 from typing import Optional
 
-from pipeline.wiktextract_loader import load_index
+
+# Module-level cache for loaded etymology index
+_etymology_index: Optional[dict] = None
+ETYMOLOGY_INDEX_PATH = '/mnt/pgdata/morphlex/data/etymology_index.pkl'
 
 
-# Module-level cache for loaded index
-_pie_index: Optional[dict] = None
+def _load_etymology_data() -> None:
+    """Load etymology index on first call."""
+    global _etymology_index
 
-
-def _load_pie_data() -> None:
-    """Load precomputed PIE reverse lookup index on first call."""
-    global _pie_index
-
-    if _pie_index is not None:
+    if _etymology_index is not None:
         return
 
-    _pie_index = load_index('ine-pro')
+    if os.path.exists(ETYMOLOGY_INDEX_PATH):
+        with open(ETYMOLOGY_INDEX_PATH, 'rb') as f:
+            _etymology_index = pickle.load(f)
+    else:
+        _etymology_index = {}
 
 
-def analyze_pie(word: str) -> list[dict]:
+def analyze_pie(english_word: str) -> list[dict]:
     """
-    Analyze a Proto-Indo-European reconstructed form and return associated English concepts.
+    Forward lookup: given an English word, find its PIE ancestors from etymology templates.
 
-    Uses Wiktextract data via reverse lookup: finds English entries
-    that have the given PIE form in their etymology.
+    Searches etymology_index.pkl for templates where the source language is 'ine-pro'.
 
     Args:
-        word: PIE reconstructed form (e.g., '*wódr̥', '*ph₂tḗr')
+        english_word: English word to look up (e.g., 'water', 'mother')
 
     Returns:
         List of dicts matching the lexicon.entries schema columns
     """
-    _load_pie_data()
+    _load_etymology_data()
 
     results = []
+    word = english_word.lower().strip()
 
-    # Direct lookup in PIE index
-    matches = _pie_index.get(word, [])
+    entry = _etymology_index.get(word)
+    if not entry:
+        return results
 
-    # If no direct match, try without leading asterisk
-    if not matches and word.startswith('*'):
-        matches = _pie_index.get(word[1:], [])
+    # Track seen PIE forms to avoid duplicates
+    seen_forms = set()
 
-    # If still no match, try with leading asterisk
-    if not matches and not word.startswith('*'):
-        matches = _pie_index.get('*' + word, [])
+    for tmpl in entry.get('templates', []):
+        if not isinstance(tmpl, dict):
+            continue
 
-    # Convert matches to result format
-    for match in matches:
-        # Build etymology links from Wiktextract data
-        etymology_links = []
-        for etym in match.get('etymology', []):
-            etym_name = etym.get('name', '')
-            etym_args = etym.get('args', {})
-            if etym_name in ('inh', 'bor', 'der', 'cog', 'root', 'etymon'):
-                # Extract source language and word from etymology template
-                source_lang = etym_args.get('2', '')
-                source_word = etym_args.get('3', '')
-                if source_lang and source_word:
-                    etymology_links.append({
-                        'type': etym_name,
-                        'source_language': source_lang,
-                        'source_word': source_word
-                    })
+        args = tmpl.get('args', {})
+        if not isinstance(args, dict):
+            continue
 
-        result = {
-            'language_code': 'ine-pro',
-            'word_native': word,
-            'word_translit': None,
-            'lemma': word,
-            'pos': match.get('pos', ''),
-            'morphological_features': {
-                'english_gloss': match.get('english_word', ''),
-                'definitions': match.get('definitions', [])[:3],  # First 3 definitions
-                'etymology_links': etymology_links if etymology_links else None,
-                'etymology_text': match.get('etymology_text', '') or None
-            },
-            'source_tool': 'wiktextract'
-        }
-        results.append(result)
+        # Check for PIE source language in args['2'] position
+        src_lang = args.get('2', '')
+        src_word = args.get('3', '')
 
-    # Calculate confidence based on number of analyses
-    total_analyses = len(results)
-    if total_analyses > 0:
-        confidence = 1.0 / total_analyses
-        for r in results:
-            r['confidence'] = confidence
+        if src_lang == 'ine-pro' and src_word:
+            if src_word in seen_forms:
+                continue
+            seen_forms.add(src_word)
+
+            relation = tmpl.get('name', '')
+            result = {
+                'language_code': 'ine-pro',
+                'word_native': src_word,
+                'word_translit': None,
+                'lemma': src_word,
+                'pos': '',
+                'morphological_features': {
+                    'english_gloss': english_word,
+                    'relation': relation
+                },
+                'source_tool': 'wiktextract-etymology',
+                'confidence': 0.9
+            }
+            results.append(result)
 
     return results

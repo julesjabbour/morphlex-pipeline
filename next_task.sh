@@ -35,9 +35,12 @@ for word in TEST_WORDS:
 
 print("")
 print("--- Results per language ---")
+all_ok = True
 for lang in LANGUAGES:
     count = len(results_by_lang[lang])
     status = "OK" if count > 0 else "EMPTY"
+    if count == 0:
+        all_ok = False
     print(f"  {lang:8}: {count:4} results [{status}]")
 
 print("")
@@ -60,6 +63,12 @@ if total_results:
         print(f"DB INSERT: FAILED - {e}")
 else:
     print("DB INSERT: SKIPPED (no results)")
+
+print("")
+if all_ok:
+    print("=== ALL 11 LANGUAGES RETURNING RESULTS ===")
+else:
+    print("=== SOME LANGUAGES STILL EMPTY - CHECK FIXES ===")
 
 PYEOF
 

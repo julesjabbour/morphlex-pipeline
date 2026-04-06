@@ -1,7 +1,9 @@
 """Pipeline Orchestrator for dispatching morphological analysis across multiple languages."""
 
 import logging
-from typing import Any
+import os
+import pickle
+from typing import Any, Optional
 
 import psycopg2
 from psycopg2.extras import Json
@@ -20,6 +22,9 @@ from analyzers.pie import analyze_pie
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Path to forward translations index
+FORWARD_TRANSLATIONS_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
 
 
 class PipelineOrchestrator:
@@ -41,13 +46,40 @@ class PipelineOrchestrator:
             'ine-pro': analyze_pie,
         }
 
+        # Languages that need English→native translation before calling adapter
+        self.needs_translation = {'he', 'sa', 'grc'}
+
+        # Forward translations cache
+        self._forward_translations: Optional[dict] = None
+
+    def _load_forward_translations(self) -> dict:
+        """Load forward translations index on first use."""
+        if self._forward_translations is None:
+            if os.path.exists(FORWARD_TRANSLATIONS_PATH):
+                with open(FORWARD_TRANSLATIONS_PATH, 'rb') as f:
+                    self._forward_translations = pickle.load(f)
+            else:
+                logger.warning(f"Forward translations not found: {FORWARD_TRANSLATIONS_PATH}")
+                self._forward_translations = {}
+        return self._forward_translations
+
+    def _translate_word(self, english_word: str, target_lang: str) -> Optional[str]:
+        """Translate English word to target language using forward_translations.pkl."""
+        translations = self._load_forward_translations()
+        word_lower = english_word.lower().strip()
+        word_trans = translations.get(word_lower, {})
+        return word_trans.get(target_lang)
+
     def analyze(self, word: str, language: str) -> list[dict]:
         """
         Analyze a word using the appropriate language adapter.
 
+        For languages that need native script input (he, sa, grc), the English word
+        is first translated to the target language using forward_translations.pkl.
+
         Args:
-            word: The word to analyze
-            language: Language code ('ar', 'tr', 'de', 'en', 'la', 'zh')
+            word: The word to analyze (English for most adapters)
+            language: Language code ('ar', 'tr', 'de', 'en', 'la', 'zh', 'he', 'sa', 'grc', 'ja', 'ine-pro')
 
         Returns:
             List of analysis result dicts
@@ -57,11 +89,22 @@ class PipelineOrchestrator:
             return []
 
         adapter = self.adapters[language]
+
+        # For he, sa, grc: translate English→native script first
+        word_to_analyze = word
+        if language in self.needs_translation:
+            translated = self._translate_word(word, language)
+            if translated:
+                word_to_analyze = translated
+            else:
+                # No translation found - skip this word for this language
+                return []
+
         try:
-            results = adapter(word)
+            results = adapter(word_to_analyze)
             return results if results else []
         except Exception as e:
-            logger.error(f"Error analyzing '{word}' ({language}): {e}")
+            logger.error(f"Error analyzing '{word_to_analyze}' ({language}): {e}")
             return []
 
     def batch_analyze(self, word_list: list[tuple[str, str]]) -> list[dict]:
