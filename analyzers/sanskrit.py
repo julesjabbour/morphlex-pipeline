@@ -1,0 +1,115 @@
+"""Sanskrit morphological analyzer using Wiktextract data.
+
+Uses reverse lookup from Sanskrit words to English concepts via precomputed index.
+Sanskrit is a major source language for PIE etymologies.
+"""
+
+from typing import Optional
+
+from pipeline.wiktextract_loader import load_index
+
+
+# Module-level cache for loaded index
+_sanskrit_index: Optional[dict] = None
+
+
+def _load_sanskrit_data() -> None:
+    """Load precomputed Sanskrit reverse lookup index on first call."""
+    global _sanskrit_index
+
+    if _sanskrit_index is not None:
+        return
+
+    _sanskrit_index = load_index('sa')
+
+
+def _normalize_sanskrit(word: str) -> str:
+    """Normalize Sanskrit word for matching (remove combining marks)."""
+    import unicodedata
+    # Remove combining marks but keep base characters
+    normalized = ''.join(
+        c for c in unicodedata.normalize('NFD', word)
+        if unicodedata.category(c) != 'Mn'
+    )
+    return normalized.strip()
+
+
+def analyze_sanskrit(word: str) -> list[dict]:
+    """
+    Analyze a Sanskrit word and return morphological analyses.
+
+    Uses Wiktextract data via reverse lookup: finds English entries
+    that have the given Sanskrit word as a translation.
+
+    Handles both Devanagari input and romanized/transliterated input.
+
+    Args:
+        word: Sanskrit word to analyze (Devanagari or transliterated)
+
+    Returns:
+        List of dicts matching the lexicon.entries schema columns
+    """
+    _load_sanskrit_data()
+
+    results = []
+
+    # Normalize input for matching
+    word_normalized = _normalize_sanskrit(word)
+
+    # Direct lookup in Sanskrit index
+    matches = _sanskrit_index.get(word, [])
+
+    # If no direct match, try normalized version
+    if not matches and word_normalized != word:
+        matches = _sanskrit_index.get(word_normalized, [])
+
+    # If still no match, search through index for partial/normalized matches
+    if not matches:
+        for sanskrit_word, entries in _sanskrit_index.items():
+            if _normalize_sanskrit(sanskrit_word) == word_normalized:
+                matches.extend(entries)
+                break
+
+    # Convert matches to result format
+    for match in matches:
+        # Build etymology links from Wiktextract data
+        # Sanskrit is a major source language for PIE etymologies
+        etymology_links = []
+        for etym in match.get('etymology', []):
+            etym_name = etym.get('name', '')
+            etym_args = etym.get('args', {})
+            if etym_name in ('inh', 'bor', 'der', 'cog', 'etymon', 'root'):
+                # Extract source language and word from etymology template
+                source_lang = etym_args.get('2', '')
+                source_word = etym_args.get('3', '')
+                if source_lang and source_word:
+                    etymology_links.append({
+                        'type': etym_name,
+                        'source_language': source_lang,
+                        'source_word': source_word
+                    })
+
+        result = {
+            'language_code': 'sa',
+            'word_native': word,
+            'word_translit': None,  # Could add transliteration if available
+            'lemma': word,
+            'pos': match.get('pos', ''),
+            'morphological_features': {
+                'english_gloss': match.get('english_word', ''),
+                'definitions': match.get('definitions', [])[:3],  # First 3 definitions
+                'etymology_links': etymology_links if etymology_links else None,
+                'etymology_text': match.get('etymology_text', '') or None
+            },
+            'source_tool': 'wiktextract'
+        }
+        results.append(result)
+
+    # Calculate confidence based on number of analyses
+    total_analyses = len(results)
+    if total_analyses > 0:
+        confidence = 1.0 / total_analyses
+        for r in results:
+            r['confidence'] = confidence
+
+    return results
