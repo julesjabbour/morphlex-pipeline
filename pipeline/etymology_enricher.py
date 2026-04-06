@@ -19,6 +19,21 @@ WIKTEXTRACT_INDEX_PATH = "/mnt/pgdata/morphlex/data/wiktextract_index.pkl"
 # Target languages for cross-links
 TARGET_LANGUAGES = ['ar', 'he', 'ja', 'zh', 'de', 'tr', 'sa', 'la', 'grc', 'ine-pro']
 
+# Script validation patterns for target languages
+# Each language has expected Unicode ranges
+SCRIPT_RANGES = {
+    'ar': (0x0600, 0x06FF),  # Arabic
+    'he': (0x0590, 0x05FF),  # Hebrew
+    'ja': [(0x3040, 0x309F), (0x30A0, 0x30FF), (0x4E00, 0x9FFF)],  # Hiragana, Katakana, CJK
+    'zh': (0x4E00, 0x9FFF),  # CJK
+    'de': (0x0000, 0x024F),  # Latin
+    'tr': (0x0000, 0x024F),  # Latin (includes Turkish chars)
+    'sa': (0x0900, 0x097F),  # Devanagari
+    'la': (0x0000, 0x024F),  # Latin
+    'grc': (0x0370, 0x03FF),  # Greek
+    'ine-pro': (0x0000, 0x024F),  # Latin (PIE reconstructions)
+}
+
 # Global indexes
 _etymology_index: dict = {}
 _wiktextract_index: dict = {}
@@ -96,7 +111,8 @@ def build_etymology_index(force_rebuild: bool = False) -> int:
             if word not in _etymology_index:
                 _etymology_index[word] = {
                     'templates': [],
-                    'text': ''
+                    'text': '',
+                    'translations': {lang: [] for lang in TARGET_LANGUAGES}
                 }
 
             # Add templates (avoid duplicates)
@@ -114,6 +130,18 @@ def build_etymology_index(force_rebuild: bool = False) -> int:
             # Keep the longest etymology text
             if len(etymology_text) > len(_etymology_index[word]['text']):
                 _etymology_index[word]['text'] = etymology_text
+
+            # Extract forward translations from senses (Wiktionary's own ordering)
+            senses = entry.get('senses', [])
+            for sense in senses:
+                translations = sense.get('translations', [])
+                for trans in translations:
+                    lang_code = trans.get('lang', trans.get('code', ''))
+                    trans_word = trans.get('word', '')
+                    if lang_code in TARGET_LANGUAGES and trans_word:
+                        # Preserve order: first sense first, first translation first
+                        if trans_word not in _etymology_index[word]['translations'][lang_code]:
+                            _etymology_index[word]['translations'][lang_code].append(trans_word)
 
             english_count += 1
 
@@ -278,78 +306,80 @@ def _is_valid_translation(word: str) -> bool:
     return True
 
 
-def _select_best_translation(translations: list[str]) -> Optional[str]:
+def _is_valid_script(word: str, lang_code: str) -> bool:
     """
-    Select the best translation from a list.
+    Check if a word contains characters from the expected script for the language.
+    Filters out e.g. Cyrillic characters in a Chinese field.
+    """
+    if lang_code not in SCRIPT_RANGES:
+        return True  # No validation for unknown languages
 
-    Prefers the SHORTEST valid translation (primary meanings tend to be shorter
-    than compound derivatives like "Essigmutter").
+    ranges = SCRIPT_RANGES[lang_code]
+
+    # Handle multiple ranges (e.g., Japanese with hiragana, katakana, CJK)
+    if isinstance(ranges, list):
+        for char in word:
+            if char.isspace() or not char.isalpha():
+                continue
+            code_point = ord(char)
+            # Check if char is in any valid range
+            in_valid_range = any(r[0] <= code_point <= r[1] for r in ranges)
+            if not in_valid_range:
+                return False
+        return True
+    else:
+        low, high = ranges
+        for char in word:
+            if char.isspace() or not char.isalpha():
+                continue
+            code_point = ord(char)
+            if not (low <= code_point <= high):
+                return False
+        return True
+
+
+def _select_first_valid_translation(translations: list[str], lang_code: str) -> Optional[str]:
     """
-    valid = [t for t in translations if _is_valid_translation(t)]
-    if not valid:
-        return None
-    # Return the shortest valid translation
-    return min(valid, key=len)
+    Select the first valid translation from the ordered list.
+
+    Wiktionary's order is semantic: first = most common/primary translation.
+    Filters out empty, "-", and wrong-script entries.
+    """
+    for t in translations:
+        if _is_valid_translation(t) and _is_valid_script(t, lang_code):
+            return t
+    return None
 
 
 def get_cross_links(concept: str) -> dict:
     """
     Find cross-language links for target languages.
 
-    Checks if the concept has translations in the wiktextract index
-    for our 10 target languages.
+    Uses forward translations from the etymology index (extracted from English entries).
+    Takes the FIRST valid translation per language (Wiktionary's semantic ordering).
 
     Args:
         concept: English word to look up
 
     Returns:
-        Dict mapping language code to translation: {"de": "Wasser", "la": "aqua", ...}
+        Dict mapping language code to translation: {"de": "König", "la": "rex", ...}
     """
     _load_indexes()
 
     word = concept.lower().strip()
     cross_links = {}
-    candidates_per_lang = {lang: [] for lang in TARGET_LANGUAGES}
 
-    # Check wiktextract index for translations in target languages
+    # Get forward translations from etymology index
+    if word not in _etymology_index:
+        return cross_links
+
+    translations = _etymology_index[word].get('translations', {})
+
     for lang in TARGET_LANGUAGES:
-        if lang in _wiktextract_index:
-            lang_entries = _wiktextract_index[lang]
-            # Look for entries that translate to this English word
-            # The index structure is {lang: {word: data}}
-            if isinstance(lang_entries, dict):
-                for foreign_word, data in lang_entries.items():
-                    # Check if this word's translations include our concept
-                    if isinstance(data, list):
-                        # data is list of english_concept dicts
-                        for concept_data in data:
-                            if isinstance(concept_data, dict):
-                                if concept_data.get('english_word', '').lower() == word:
-                                    candidates_per_lang[lang].append(foreign_word)
-                    elif isinstance(data, dict):
-                        translations = data.get('translations', [])
-                        for trans in translations:
-                            if isinstance(trans, dict):
-                                trans_word = trans.get('word', '').lower()
-                                trans_lang = trans.get('lang_code', trans.get('code', ''))
-                                if trans_word == word and trans_lang == 'en':
-                                    candidates_per_lang[lang].append(foreign_word)
-
-    # Also check etymology templates for direct references
-    if word in _etymology_index:
-        templates = _etymology_index[word].get('templates', [])
-        for tmpl in templates:
-            args = tmpl.get('args', {})
-            lang_code = args.get('1', '')
-            foreign_word = args.get('2', args.get('3', ''))
-
-            if lang_code in TARGET_LANGUAGES and foreign_word:
-                candidates_per_lang[lang_code].append(foreign_word)
-
-    # Select best translation for each language
-    for lang, candidates in candidates_per_lang.items():
-        if candidates:
-            best = _select_best_translation(candidates)
+        lang_translations = translations.get(lang, [])
+        if lang_translations:
+            # Take the first valid translation (Wiktionary's order = most common first)
+            best = _select_first_valid_translation(lang_translations, lang)
             if best:
                 cross_links[lang] = best
 
