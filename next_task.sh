@@ -1,5 +1,5 @@
 #!/bin/bash
-FLAG="/tmp/.eng015_noun_fix"
+FLAG="/tmp/.eng015_defscore"
 if [ -f "$FLAG" ]; then
     echo "=== ALREADY COMPLETE ==="
     exit 0

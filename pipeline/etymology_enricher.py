@@ -55,6 +55,16 @@ def _valid_script(lang: str, word: str) -> bool:
     return True
 
 
+def _definition_score(concept, english_word: str) -> int:
+    """Lower score = better match. 0 = english_word appears in first definition."""
+    defs = concept.get('definitions', []) if isinstance(concept, dict) else []
+    ew_lower = english_word.lower()
+    for i, d in enumerate(defs):
+        if isinstance(d, str) and ew_lower in d.lower():
+            return i
+    return 999  # english_word not found in any definition
+
+
 def build_etymology_index(force_rebuild: bool = False) -> int:
     """
     Build etymology index from raw Wiktextract JSONL dump.
@@ -189,9 +199,10 @@ def _load_indexes():
         with open(WIKTEXTRACT_INDEX_PATH, 'rb') as f:
             _wiktextract_index = pickle.load(f)
 
-        # Build forward translation index: english_word -> {lang: (foreign_word, pos)}
+        # Build forward translation index: english_word -> {lang: (foreign_word, pos, score)}
         # Fix 1 (Polysemy): Prefer noun senses - nouns always replace non-nouns
         # Fix 2 (Script validation): Filter garbage entries with wrong scripts
+        # Fix 3 (Noun-vs-noun): Use definition scoring - lower score wins
         _forward_translations = {}
         for lang, words in _wiktextract_index.items():
             for foreign_word, concepts in words.items():
@@ -207,12 +218,20 @@ def _load_indexes():
                             _forward_translations[eng] = {}
                         if lang not in _forward_translations[eng]:
                             # First entry for this (english_word, lang) — take it
-                            _forward_translations[eng][lang] = (foreign_word, pos)
+                            score = _definition_score(concept, eng)
+                            _forward_translations[eng][lang] = (foreign_word, pos, score)
                         else:
-                            # Already have an entry — replace ONLY if new one is noun and old one isn't
-                            existing_pos = _forward_translations[eng][lang][1]
+                            # Already have an entry — check replacement rules
+                            existing = _forward_translations[eng][lang]
+                            existing_pos = existing[1]
+                            existing_score = existing[2]
+                            new_score = _definition_score(concept, eng)
+                            # Noun always beats non-noun
                             if pos == 'noun' and existing_pos != 'noun':
-                                _forward_translations[eng][lang] = (foreign_word, pos)
+                                _forward_translations[eng][lang] = (foreign_word, pos, new_score)
+                            # Between two nouns, lower definition score wins
+                            elif pos == 'noun' and existing_pos == 'noun' and new_score < existing_score:
+                                _forward_translations[eng][lang] = (foreign_word, pos, new_score)
     else:
         _wiktextract_index = {}
         _forward_translations = {}
