@@ -1,19 +1,22 @@
 #!/bin/bash
-# Diagnostic: Find Wiktextract dump file location
-
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== WIKTEXTRACT FILE SEARCH ==="
-echo "--- /mnt/pgdata/morphlex/data/ ---"
-ls -lhS /mnt/pgdata/morphlex/data/ 2>&1
+echo "=== DOWNLOADING WIKTEXTRACT DUMP ==="
+echo "Downloading English Wiktextract from kaikki.org (~2.4GB)..."
+wget -O /mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz \
+  "https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz" 2>&1 | tail -5
+
 echo ""
-echo "--- Search for wikt* files ---"
-find /mnt/pgdata -name "*wikt*" -o -name "*wiktextract*" 2>/dev/null
+echo "File size:"
+ls -lh /mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz
+
 echo ""
-echo "--- Search for large .gz or .jsonl files ---"
-find /mnt/pgdata -name "*.jsonl*" -o -name "*.gz" 2>/dev/null | head -20
-echo ""
-echo "--- Home directory ---"
-ls -lhS ~/wikt* ~/raw-wikt* 2>/dev/null
-ls -lhS ~/*.jsonl* ~/*.gz 2>/dev/null
-echo "=== SEARCH COMPLETE ==="
+echo "First 3 lines (to verify format):"
+zcat /mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz | head -3 | python3 -c "
+import sys, json
+for line in sys.stdin:
+    d = json.loads(line)
+    print(f\"word={d.get('word')}, lang={d.get('lang')}, pos={d.get('pos')}\")
+"
+
+echo "=== DOWNLOAD COMPLETE ==="
