@@ -1,158 +1,31 @@
-"""Ancient Greek morphological analyzer using Morpheus."""
+"""Ancient Greek morphological analyzer using Wiktextract index."""
 
-import re
-import urllib.request
-import urllib.error
+from pipeline.wiktextract_loader import load_index
 
-
-# POS tag mapping from Morpheus (uses single-letter codes in <NL> format)
-_MORPHEUS_POS_MAP = {
-    'V': 'verb',
-    'N': 'noun',
-    'ADJ': 'adjective',
-    'ADV': 'adverb',
-    'PREP': 'preposition',
-    'CONJ': 'conjunction',
-    'PRON': 'pronoun',
-    'PART': 'participle',
-    'NUM': 'numeral',
-    'INTERJ': 'interjection',
-    'ART': 'article',
-}
+_index = None
 
 
-def _query_morpheus(word: str) -> list[dict]:
-    """
-    Query Morpheus REST API for Ancient Greek morphological analysis.
-
-    Morpheus returns a custom text format (NOT JSON):
-    <NL>V λέγω  pres ind act 1st sg</NL>
-
-    Args:
-        word: Ancient Greek word to analyze
-
-    Returns:
-        List of analysis dicts from Morpheus
-    """
+def analyze_greek(word):
+    global _index
+    if _index is None:
+        _index = load_index('grc')
     results = []
-
-    try:
-        url = f"http://localhost:1315/greek/{word}"
-        with urllib.request.urlopen(url, timeout=5) as response:
-            text_data = response.read().decode('utf-8')
-
-        # Parse each <NL>...</NL> block
-        nl_blocks = re.findall(r'<NL>([^<]+)</NL>', text_data)
-
-        for block in nl_blocks:
-            block = block.strip()
-            if not block:
-                continue
-
-            result = {
-                'lemma': '',
+    if word in _index:
+        for concept in _index[word]:
+            results.append({
+                'language_code': 'grc',
+                'word_native': word,
+                'lemma': word,
+                'root': '',
+                'stem': '',
+                'pattern': '',
                 'pos': '',
-                'features': {}
-            }
-
-            # Split on whitespace - POS is first token
-            tokens = block.split()
-            if not tokens:
-                continue
-
-            # First token is POS (V, N, ADJ, etc.)
-            pos_raw = tokens[0].upper()
-            result['pos'] = _MORPHEUS_POS_MAP.get(pos_raw, pos_raw.lower())
-
-            # Second token contains lemma: format is "word_.lemma" - extract part after the dot
-            if len(tokens) > 1:
-                lemma_part = tokens[1]
-                # Lemma is the part after the dot (e.g., "λόγος_.λόγος" -> "λόγος")
-                if '.' in lemma_part:
-                    result['lemma'] = lemma_part.split('.', 1)[1]
-                else:
-                    result['lemma'] = lemma_part
-
-            # Remaining tokens (before the conjugation info) are morphological features
-            # Features like: pres ind act 1st sg
-            feature_tokens = tokens[2:] if len(tokens) > 2 else []
-
-            for feat in feature_tokens:
-                feat_lower = feat.lower()
-
-                # Skip conjugation info (e.g., conj1.are.vb)
-                if '.' in feat:
-                    continue
-
-                # Tense
-                if feat_lower in ('pres', 'impf', 'fut', 'perf', 'plup', 'futperf', 'aor'):
-                    result['features']['tense'] = feat_lower
-                # Mood
-                elif feat_lower in ('ind', 'subj', 'imp', 'inf', 'opt', 'part'):
-                    result['features']['mood'] = feat_lower
-                # Voice
-                elif feat_lower in ('act', 'pass', 'mp', 'mid'):
-                    result['features']['voice'] = feat_lower
-                # Number
-                elif feat_lower in ('sg', 'pl', 'dual'):
-                    result['features']['number'] = feat_lower
-                # Person
-                elif feat_lower in ('1st', '2nd', '3rd'):
-                    result['features']['person'] = feat_lower
-                # Case
-                elif feat_lower in ('nom', 'gen', 'dat', 'acc', 'voc'):
-                    result['features']['case'] = feat_lower
-                # Gender
-                elif feat_lower in ('masc', 'fem', 'neut'):
-                    result['features']['gender'] = feat_lower
-                # Degree
-                elif feat_lower in ('pos', 'comp', 'superl'):
-                    result['features']['degree'] = feat_lower
-
-            if result['lemma']:
-                results.append(result)
-
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
-        # Connection error
-        pass
-
-    return results
-
-
-def analyze_greek(word: str) -> list[dict]:
-    """
-    Analyze an Ancient Greek word and return morphological analyses.
-
-    Queries Morpheus REST API for Greek morphological analysis.
-
-    Args:
-        word: Ancient Greek word to analyze
-
-    Returns:
-        List of dicts matching the lexicon.entries schema columns
-    """
-    results = []
-
-    # Query Morpheus
-    morpheus_results = _query_morpheus(word)
-
-    # Convert Morpheus results
-    for m in morpheus_results:
-        result = {
-            'language_code': 'grc',
-            'word_native': word,
-            'lemma': m['lemma'],
-            'pos': m['pos'],
-            'morphological_features': m['features'],
-            'source_tool': 'morpheus'
-        }
-        results.append(result)
-
-    # Calculate confidence based on total analyses
-    total_analyses = len(results)
-    if total_analyses > 0:
-        confidence = 1.0 / total_analyses
-        for r in results:
-            r['confidence'] = confidence
-
+                'morphological_features': {},
+                'derivation_type': '',
+                'compound_components': [],
+                'source_tool': 'wiktextract',
+                'confidence': 0.8,
+                'word_translit': '',
+                'english_concept': concept
+            })
     return results
