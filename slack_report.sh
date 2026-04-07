@@ -1,105 +1,79 @@
 #!/bin/bash
-# slack_report.sh - Posts output to Slack, handles long messages by splitting
-# Never truncates - splits into multiple messages if needed
-# Always saves full output to /mnt/pgdata/morphlex/reports/
+# slack_report.sh - Posts to Slack, handles any message size
+# Completely rewritten for reliability - no incremental patches
+# Usage: bash slack_report.sh /path/to/message.txt
+#    OR: echo "message" | bash slack_report.sh
 
+set -o pipefail
+DEBUG_LOG="/tmp/morphlex_debug.log"
+
+log() {
+    echo "[$(date -Iseconds)] slack_report: $1" >> "$DEBUG_LOG"
+}
+
+# Load webhook URL
 CONFIG="/mnt/pgdata/morphlex/.webhook_url"
 if [ ! -f "$CONFIG" ]; then
-  echo "ERROR: No webhook config at $CONFIG" >> /tmp/pipeline.log
-  exit 1
+    log "FATAL: No webhook config at $CONFIG"
+    echo "ERROR: No webhook config at $CONFIG" >&2
+    exit 1
 fi
 WEBHOOK_URL=$(cat "$CONFIG")
 
-# Save full untruncated output to reports directory (via temp file - never use bash variable for large data)
+if [ -z "$WEBHOOK_URL" ] || [[ ! "$WEBHOOK_URL" =~ ^https:// ]]; then
+    log "FATAL: Invalid webhook URL"
+    echo "ERROR: Invalid webhook URL" >&2
+    exit 1
+fi
+
+# Get message - either from file argument or stdin
+if [ -n "$1" ] && [ -f "$1" ]; then
+    INPUT_FILE="$1"
+    log "Reading from file: $INPUT_FILE"
+else
+    # Read stdin to temp file
+    INPUT_FILE="/tmp/slack_input_$$.txt"
+    cat > "$INPUT_FILE"
+    log "Read stdin to: $INPUT_FILE"
+    CLEANUP_INPUT=1
+fi
+
+# Verify input
+if [ ! -f "$INPUT_FILE" ]; then
+    log "FATAL: Input file missing: $INPUT_FILE"
+    echo "ERROR: Input file missing" >&2
+    exit 1
+fi
+
+INPUT_SIZE=$(stat -c%s "$INPUT_FILE" 2>/dev/null || echo 0)
+log "Input size: $INPUT_SIZE bytes"
+
+if [ "$INPUT_SIZE" -eq 0 ]; then
+    log "WARNING: Empty message, posting placeholder"
+    echo "(empty output)" > "$INPUT_FILE"
+fi
+
+# Save to reports directory
 REPORTS_DIR="/mnt/pgdata/morphlex/reports"
 mkdir -p "$REPORTS_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 REPORT_FILE="$REPORTS_DIR/task_output_${TIMESTAMP}.md"
+cp "$INPUT_FILE" "$REPORT_FILE"
+log "Saved to: $REPORT_FILE"
 
-# Use temp file to avoid storing large data in bash variable
-TMPFILE=$(mktemp /tmp/slack_input.XXXXXX)
-trap "rm -f '$TMPFILE'" EXIT
+# Post to Slack using external Python script (no inline heredoc issues)
+python3 /mnt/pgdata/morphlex/slack_post.py "$WEBHOOK_URL" "$INPUT_FILE"
+PYTHON_EXIT=$?
 
-# Read stdin to temp file (handles any size)
-cat > "$TMPFILE"
-cp "$TMPFILE" "$REPORT_FILE"
-echo "Full output saved to: $REPORT_FILE"
-
-# Post to Slack - split into chunks if over 3500 chars
-# Read from temp file to avoid "Argument list too long" for large outputs
-cat "$TMPFILE" | python3 -c "
-import json
-import urllib.request
-import urllib.error
-import sys
-import traceback
-
-# Read message from stdin (handles any size)
-msg = sys.stdin.read()
-webhook_url = sys.argv[1]
-max_chars = 3500
-
-def post_to_slack(text):
-    try:
-        data = json.dumps({'text': text}).encode()
-        req = urllib.request.Request(webhook_url, data=data, headers={'Content-Type': 'application/json'})
-        response = urllib.request.urlopen(req, timeout=30)
-        return True
-    except urllib.error.HTTPError as e:
-        print(f'Slack HTTP error: {e.code} - {e.reason}', file=sys.stderr)
-        print(f'Response body: {e.read().decode()}', file=sys.stderr)
-        return False
-    except urllib.error.URLError as e:
-        print(f'Slack URL error: {e.reason}', file=sys.stderr)
-        return False
-    except Exception as e:
-        print(f'Slack post error: {type(e).__name__}: {e}', file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        return False
-
-# Validate webhook URL
-if not webhook_url or not webhook_url.startswith('https://'):
-    print(f'Invalid webhook URL: {webhook_url[:50] if webhook_url else \"(empty)\"}...', file=sys.stderr)
-    sys.exit(1)
-
-success = True
-if len(msg) <= max_chars:
-    # Single message - no splitting needed
-    success = post_to_slack(msg)
-else:
-    # Split into chunks at line boundaries
-    lines = msg.split('\\n')
-    chunks = []
-    current_chunk = []
-    current_len = 0
-
-    for line in lines:
-        line_len = len(line) + 1  # +1 for newline
-        if current_len + line_len > max_chars and current_chunk:
-            chunks.append('\\n'.join(current_chunk))
-            current_chunk = [line]
-            current_len = line_len
-        else:
-            current_chunk.append(line)
-            current_len += line_len
-
-    if current_chunk:
-        chunks.append('\\n'.join(current_chunk))
-
-    # Post each chunk with part indicator
-    total = len(chunks)
-    for i, chunk in enumerate(chunks, 1):
-        header = f'[Part {i}/{total}]\\n' if total > 1 else ''
-        if not post_to_slack(header + chunk):
-            success = False
-            print(f'Failed to post chunk {i}/{total}', file=sys.stderr)
-
-if not success:
-    sys.exit(1)
-print(f'Successfully posted to Slack ({len(msg)} chars)')
-" "$WEBHOOK_URL" 2>&1
-
-SLACK_EXIT=$?
-if [ $SLACK_EXIT -ne 0 ]; then
-    echo "ERROR: slack_report.sh failed with exit code $SLACK_EXIT" >> /tmp/morphlex_debug.log
+if [ $PYTHON_EXIT -ne 0 ]; then
+    log "Python poster failed with exit $PYTHON_EXIT"
+    echo "ERROR: Slack post failed" >&2
 fi
+
+# Cleanup stdin temp file if we created it
+if [ -n "$CLEANUP_INPUT" ]; then
+    rm -f "$INPUT_FILE"
+fi
+
+log "Complete (exit $PYTHON_EXIT)"
+exit $PYTHON_EXIT
