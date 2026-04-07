@@ -1,31 +1,29 @@
 #!/bin/bash
-# Full Pipeline Health Check and Production Readiness Audit
-# Session 45 - Comprehensive 3-part report
-# Output goes to /mnt/pgdata/morphlex/health_check_report.md
+# Task: Test slack_report.sh split fix + Print warning suppression audit
+# Session 46 - Testing truncation fix from commit 3a8fda8
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-REPORT="/mnt/pgdata/morphlex/health_check_report.md"
 GIT_HEAD=$(git rev-parse HEAD)
 GIT_SHORT=$(git rev-parse --short HEAD)
 START_TIME=$(date -Iseconds)
 
-echo "=== FULL PIPELINE HEALTH CHECK ==="
+echo "=== FULL PIPELINE HEALTH CHECK + WARNING AUDIT ==="
 echo "Start: $START_TIME"
 echo "Git HEAD: $GIT_HEAD"
 echo ""
+echo "Purpose: Testing slack_report.sh split fix (commit 3a8fda8)"
+echo "Expected: Output > 3500 chars should split into multiple Slack messages"
+echo ""
 
-# Write report header
-cat > "$REPORT" << EOF
-# Morphlex Pipeline Health Check Report
+# ============================================================
+# TASK 1: FULL PIPELINE HEALTH CHECK (Parts 1, 2, 3)
+# ============================================================
 
-**Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-**Git HEAD:** \`$GIT_HEAD\`
-**Start:** $START_TIME
-
----
-
-EOF
+echo "============================================================"
+echo "TASK 1: FULL PIPELINE HEALTH CHECK"
+echo "============================================================"
+echo ""
 
 echo "=== PART 1: INFRASTRUCTURE VERIFICATION ==="
 echo ""
@@ -40,7 +38,7 @@ if echo "$CRON_OUTPUT" | grep -q "morphlex"; then
 fi
 echo ""
 
-# 1b. Flock verification (check if lock file exists)
+# 1b. Flock verification
 echo "--- Flock Lock File ---"
 if [ -f /tmp/morphlex_run.lock ]; then
     echo "Lock file exists: /tmp/morphlex_run.lock"
@@ -50,13 +48,12 @@ else
 fi
 echo ""
 
-# 1c. Marker file for last task (a6911f5)
+# 1c. Marker files
 echo "--- Marker Files ---"
 MARKER_DIR="/tmp/morphlex_markers"
 if [ -d "$MARKER_DIR" ]; then
     echo "Marker directory contents:"
     ls -la "$MARKER_DIR"
-    # Check specifically for a6911f5 task marker
     TASK_HASH=$(md5sum /mnt/pgdata/morphlex/next_task.sh 2>/dev/null | cut -d' ' -f1)
     echo ""
     echo "Current task hash: $TASK_HASH"
@@ -87,43 +84,9 @@ echo "--- Memory Usage ---"
 free -h
 echo ""
 
-# Append Part 1 to report
-cat >> "$REPORT" << EOF
-## Part 1: Infrastructure Verification
-
-### Crontab Status
-\`\`\`
-$CRON_OUTPUT
-\`\`\`
-**Cron enabled:** $CRON_ENABLED
-
-### Flock Lock File
-$(if [ -f /tmp/morphlex_run.lock ]; then echo "Lock file exists"; else echo "Lock file not present (created on demand)"; fi)
-
-### Marker Files
-$(ls -la "$MARKER_DIR" 2>&1 || echo "No marker directory")
-
-### Running Processes
-Active morphlex/build processes: $ZOMBIES
-
-### Disk Space
-\`\`\`
-$(df -h /mnt/pgdata)
-\`\`\`
-
-### Memory
-\`\`\`
-$(free -h)
-\`\`\`
-
----
-
-EOF
-
 echo "=== PART 2: PIPELINE END-TO-END VERIFICATION ==="
 echo ""
 
-# Run 10-word Arabic test and sample pkl keys
 python3 << 'PYEOF'
 import pickle
 import os
@@ -132,7 +95,6 @@ import random
 import sys
 
 PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
-REPORT_PATH = '/mnt/pgdata/morphlex/health_check_report.md'
 ARABIC_DIACRITICS = re.compile(r'[\u064B-\u065F\u0670]')
 
 # 10 test words from S44
@@ -155,16 +117,10 @@ print()
 print("5 SAMPLE PKL KEYS (verify zero diacritics):")
 random.seed(42)
 sample_keys = random.sample(list(translations.keys()), min(5, len(translations)))
-sample_lines = []
-all_clean = True
 for key in sample_keys:
     has_diacritics = bool(ARABIC_DIACRITICS.search(key))
     status = "HAS DIACRITICS!" if has_diacritics else "clean"
-    if has_diacritics:
-        all_clean = False
-    line = f"  '{key}' - {status}"
-    print(line)
-    sample_lines.append(f"- `{key}` - {status}")
+    print(f"  '{key}' - {status}")
 print()
 
 # Count total keys with diacritics
@@ -192,16 +148,13 @@ for word in TEST_WORDS:
                 total += 1
 
 print()
-test_lines = []
 ok_count = 0
 for lang in LANGUAGES:
     count = lang_results[lang]
     status = "[OK]" if count > 0 else "[EMPTY]"
     if count > 0:
         ok_count += 1
-    line = f"  {lang} : {count} results {status}"
-    print(line)
-    test_lines.append(f"| {lang} | {count} | {status} |")
+    print(f"  {lang} : {count} results {status}")
 
 print()
 print(f"Languages with results: {ok_count}/11")
@@ -211,28 +164,6 @@ print(f"TOTAL: {total} results from 10 words x 11 languages")
 expected_match = (ok_count >= 10 and lang_results['ine-pro'] == 0 and total >= 80)
 match_status = "PASS" if expected_match else "CHECK"
 print(f"Expected pattern (10/11 OK, ine-pro EMPTY, ~90): {match_status}")
-
-# Write Part 2 to report
-with open(REPORT_PATH, 'a') as f:
-    f.write("## Part 2: Pipeline End-to-End Verification\n\n")
-    f.write(f"### PKL File Status\n")
-    f.write(f"- **File size:** {file_size:,} bytes ({file_size/1024/1024:.2f} MB)\n")
-    f.write(f"- **Total Arabic keys:** {len(translations):,}\n")
-    f.write(f"- **Keys with diacritics:** {keys_with_diacritics}\n")
-    f.write(f"- **Diacritics check:** {diacritics_status}\n\n")
-    f.write("### 5 Sample PKL Keys\n")
-    for line in sample_lines:
-        f.write(f"{line}\n")
-    f.write("\n### 10-Word Arabic Test Results\n\n")
-    f.write("| Language | Results | Status |\n")
-    f.write("|----------|---------|--------|\n")
-    for line in test_lines:
-        f.write(f"{line}\n")
-    f.write(f"\n**Total:** {total} results from 10 words x 11 languages\n")
-    f.write(f"**Languages with results:** {ok_count}/11\n")
-    f.write(f"**Expected pattern match:** {match_status}\n\n")
-    f.write("---\n\n")
-
 PYEOF
 echo ""
 
@@ -246,7 +177,6 @@ import random
 import psycopg2
 
 PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
-REPORT_PATH = '/mnt/pgdata/morphlex/health_check_report.md'
 LANGUAGES = ['ar', 'en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
 
 with open(PKL_PATH, 'rb') as f:
@@ -260,18 +190,14 @@ print()
 print("10 SAMPLE ARABIC KEYS WITH TRANSLATION COVERAGE:")
 random.seed(123)
 sample_keys = random.sample(list(translations.keys()), min(10, total_keys))
-sample_analysis = []
 for key in sample_keys:
     trans = translations.get(key, {})
     lang_count = len(trans)
     langs = list(trans.keys())[:5]
-    line = f"  '{key}': {lang_count} languages ({', '.join(langs)}{'...' if lang_count > 5 else ''})"
-    print(line)
-    sample_analysis.append(f"| `{key}` | {lang_count} | {', '.join(trans.keys())} |")
+    print(f"  '{key}': {lang_count} languages ({', '.join(langs)}{'...' if lang_count > 5 else ''})")
 print()
 
 # Estimate total rows
-# Each Arabic key produces 1 row for Arabic + N rows for translations
 total_translation_count = 0
 for key, trans in translations.items():
     total_translation_count += 1  # Arabic itself
@@ -369,66 +295,25 @@ if blockers:
 else:
     print("NO BLOCKERS - Ready for production run")
 print()
-
-# Write Part 3 to report
-with open(REPORT_PATH, 'a') as f:
-    f.write("## Part 3: Production Readiness Analysis\n\n")
-    f.write(f"### Dataset Size\n")
-    f.write(f"- **Total Arabic keys:** {total_keys:,}\n")
-    f.write(f"- **Total translation pairs:** {total_translation_count:,}\n")
-    f.write(f"- **Average translations per key:** {avg_per_key:.2f}\n")
-    f.write(f"- **Estimated rows for full run:** ~{total_translation_count:,}\n\n")
-
-    f.write("### 10 Sample Arabic Keys\n\n")
-    f.write("| Arabic Key | Lang Count | Languages |\n")
-    f.write("|------------|------------|------------|\n")
-    for line in sample_analysis:
-        f.write(f"{line}\n")
-    f.write("\n")
-
-    f.write("### Database Status\n")
-    f.write(f"- **Connection:** {'OK' if db_accessible else 'FAILED'}\n")
-    if db_error:
-        f.write(f"- **Error:** {db_error}\n")
-    f.write(f"- **Schema 'lexicon':** {'EXISTS' if schema_exists else 'NOT FOUND'}\n")
-    f.write(f"- **Table 'lexicon.entries':** {'EXISTS' if table_exists else 'NOT FOUND'}\n\n")
-
-    f.write("### Orchestrator Status\n")
-    f.write(f"- **orchestrator.py:** {'EXISTS' if os.path.exists(orchestrator_path) else 'NOT FOUND'}\n")
-    f.write(f"- **run_pipeline.py:** {'EXISTS' if os.path.exists(run_pipeline_path) else 'NOT FOUND'}\n\n")
-
-    f.write("### Blockers\n")
-    if blockers:
-        for b in blockers:
-            f.write(f"- {b}\n")
-    else:
-        f.write("**NO BLOCKERS** - Ready for production run\n")
-    f.write("\n---\n\n")
-
 PYEOF
 
+echo "============================================================"
+echo "TASK 2: WARNING SUPPRESSION AUDIT"
+echo "============================================================"
+echo ""
+echo "Full contents of /mnt/pgdata/morphlex/reports/warning_suppression_audit.md:"
+echo ""
+cat /mnt/pgdata/morphlex/reports/warning_suppression_audit.md
+echo ""
+
 END_TIME=$(date -Iseconds)
+echo "============================================================"
+echo "REPORT COMPLETE"
+echo "============================================================"
 echo ""
-echo "End: $END_TIME"
+echo "Start: $START_TIME"
+echo "End:   $END_TIME"
+echo "Git HEAD: $GIT_HEAD"
 echo ""
-
-# Finalize report
-cat >> "$REPORT" << EOF
-## Summary
-
-**Report generated:** $END_TIME
-**Git HEAD:** \`$GIT_HEAD\`
-**Report file:** \`$REPORT\`
-
-EOF
-
-echo "=== HEALTH CHECK COMPLETE ==="
-echo "Full report written to: $REPORT"
-echo ""
-
-# Print compact summary for Slack
-echo "=== SLACK SUMMARY ==="
-echo "Git HEAD: $GIT_SHORT"
-echo "Time: $START_TIME -> $END_TIME"
-echo "Cron: $CRON_ENABLED | Zombies: $ZOMBIES"
-echo "Full report: $REPORT"
+echo "This output should be split into multiple Slack messages."
+echo "If you see [Part 1/N], [Part 2/N], etc. the fix is working!"
