@@ -170,8 +170,8 @@ def analyze_german(word: str) -> list[dict]:
                     results.append(result)
 
                 return results
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"DWDSmor analysis error for '{word}': {e}")
 
     # Fallback: CharSplit only (when DWDSmor unavailable or returns no results)
     result = {

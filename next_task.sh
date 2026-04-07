@@ -54,7 +54,7 @@ MARKER_DIR="/tmp/morphlex_markers"
 if [ -d "$MARKER_DIR" ]; then
     echo "Marker directory contents:"
     ls -la "$MARKER_DIR"
-    TASK_HASH=$(md5sum /mnt/pgdata/morphlex/next_task.sh 2>/dev/null | cut -d' ' -f1)
+    TASK_HASH=$(md5sum /mnt/pgdata/morphlex/next_task.sh 2>>/tmp/morphlex_debug.log | cut -d' ' -f1)
     echo ""
     echo "Current task hash: $TASK_HASH"
     if [ -f "$MARKER_DIR/done_$TASK_HASH" ]; then

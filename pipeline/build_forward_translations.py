@@ -288,8 +288,8 @@ def _sample_dump_structure():
                     if entry.get('translations') and not sample_any:
                         has_trans += 1
                         sample_any = entry
-                except:
-                    pass
+                except Exception as e:
+                    print(f"  [DEBUG] JSON parse error at line {i}: {e}")
 
         print(f"  Languages in first 10K lines: {dict(lang_counter.most_common(10))}")
         print(f"  Entries with translations: {has_trans}")

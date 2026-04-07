@@ -73,7 +73,8 @@ def _load_morpholex_data() -> dict:
                             _morpholex_cache[str(word).lower()] = str(segm)
 
             wb.close()
-        except Exception:
+        except Exception as e:
+            print(f"MorphoLex file load error ({xlsx_file}): {e}")
             continue
 
     return _morpholex_cache
@@ -108,7 +109,8 @@ def _load_morphynet_data() -> dict:
                         deriv_type = parts[2] if len(parts) > 2 else ''
                         if target_word and deriv_type:
                             _morphynet_cache[target_word.lower()] = deriv_type
-        except Exception:
+        except Exception as e:
+            print(f"MorphyNet file load error ({tsv_file}): {e}")
             continue
 
     return _morphynet_cache

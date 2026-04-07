@@ -110,7 +110,8 @@ def _load_cedict():
                 if traditional != simplified:
                     _cedict[traditional] = entry
 
-            except Exception:
+            except Exception as e:
+                print(f"CEDICT parse error on line: {line[:50]}... - {e}")
                 continue
 
     return _cedict

@@ -1,13 +1,15 @@
 # Warning and Error Suppression Audit
 
 **Date:** 2026-04-07  
+**Updated:** 2026-04-07 (all suppressions fixed)  
 **Scope:** All Python files and shell scripts in `/mnt/pgdata/morphlex`
 
 ---
 
 ## Summary
 
-Found **15 instances** of warning/error suppression across **9 files**.
+**BEFORE:** 15 instances of warning/error suppression across 9 files  
+**AFTER:** 0 suppressions remain (10 fixed, 5 already logged properly)
 
 ---
 
@@ -155,6 +157,27 @@ The following are **actual suppressions** that hide errors/warnings:
 3. **german.py:173:** Log the exception before falling through to fallback
 4. **chinese.py, english.py:** Add logging for skipped entries to aid debugging
 5. **Shell scripts:** Consider logging git/md5sum errors to a debug file instead of /dev/null
+
+---
+
+## Fixes Applied (2026-04-07)
+
+All 10 true suppressions have been fixed:
+
+| File | Line | Original | Fixed |
+|------|------|----------|-------|
+| run.sh | 14 | `2>/dev/null` | `2>>/tmp/morphlex_debug.log` |
+| next_task.sh | 57 | `2>/dev/null` | `2>>/tmp/morphlex_debug.log` |
+| diagnostic_test.py | 11 | `warnings.filterwarnings('ignore')` | Removed |
+| diagnostic_test.py | 12 | `TF_CPP_MIN_LOG_LEVEL=3` | Removed |
+| diagnostic_test.py | 15 | `logging.disable(logging.CRITICAL)` | Removed |
+| build_forward_translations.py | 291 | bare `except: pass` | `except Exception as e:` + print error |
+| german.py | 173 | `except Exception: pass` | `except Exception as e:` + print error |
+| chinese.py | 113 | `except Exception: continue` | `except Exception as e:` + print error |
+| english.py | 76 | `except Exception: continue` | `except Exception as e:` + print error |
+| english.py | 111 | `except Exception: continue` | `except Exception as e:` + print error |
+
+5 instances (japanese.py, orchestrator.py, translator.py) were already logging properly - no changes needed.
 
 ---
 

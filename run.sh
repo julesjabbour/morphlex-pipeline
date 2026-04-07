@@ -11,7 +11,7 @@ flock -n 200 || exit 0
 cd /mnt/pgdata/morphlex
 
 # Sync with remote
-git fetch origin main 2>/dev/null && git reset --hard origin/main 2>/dev/null
+git fetch origin main 2>>/tmp/morphlex_debug.log && git reset --hard origin/main 2>>/tmp/morphlex_debug.log
 
 # If next_task.sh doesn't exist, exit silently
 [ -f next_task.sh ] || exit 0

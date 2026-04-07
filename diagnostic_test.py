@@ -7,12 +7,7 @@ import pickle
 import sys
 import warnings
 
-# Suppress all library warnings
-warnings.filterwarnings('ignore')
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-import logging
-logging.disable(logging.CRITICAL)
+# All warnings visible per project rules - no suppression
 
 # Add pipeline to path - all code lives at /mnt/pgdata/morphlex
 sys.path.insert(0, '/mnt/pgdata/morphlex')
