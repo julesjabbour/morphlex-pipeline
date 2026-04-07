@@ -2,12 +2,11 @@
 """
 Build forward translations index from raw Wiktextract dump.
 
-Streams raw-wiktextract-data.jsonl.gz and extracts translations from English entries.
-Each English entry has a 'translations' list ordered by sense (primary first).
-For each (english_word, target_lang) pair, we keep ONLY THE FIRST match.
+For Arabic anchor mode: builds Arabic→X translation dictionary.
+Streams raw-wiktextract-data.jsonl.gz and extracts translations from Arabic entries.
 
 Output: data/forward_translations.pkl
-Format: {english_word: {lang_code: word}}
+Format: {arabic_word: {lang_code: word}}
 """
 
 import gzip
@@ -18,7 +17,8 @@ import pickle
 RAW_WIKTEXTRACT_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
 OUTPUT_PATH = "/mnt/pgdata/morphlex/data/forward_translations.pkl"
 
-TARGET_LANGUAGES = ['ar', 'he', 'ja', 'zh', 'de', 'tr', 'sa', 'la', 'grc']
+# Target languages for Arabic anchor mode (all languages except Arabic itself)
+TARGET_LANGUAGES = ['en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
 
 
 def _valid_script(lang: str, word: str) -> bool:
@@ -26,9 +26,6 @@ def _valid_script(lang: str, word: str) -> bool:
     if lang == 'zh':
         # CJK Unified Ideographs: U+4E00-U+9FFF
         return any('\u4e00' <= c <= '\u9fff' for c in word)
-    elif lang == 'ar':
-        # Arabic: U+0600-U+06FF
-        return any('\u0600' <= c <= '\u06ff' for c in word)
     elif lang == 'he':
         # Hebrew: U+0590-U+05FF
         return any('\u0590' <= c <= '\u05ff' for c in word)
@@ -41,7 +38,8 @@ def _valid_script(lang: str, word: str) -> bool:
     elif lang == 'grc':
         # Greek: U+0370-U+03FF or Extended Greek: U+1F00-U+1FFF
         return any(('\u0370' <= c <= '\u03ff') or ('\u1f00' <= c <= '\u1fff') for c in word)
-    # de, tr, la use Latin script - no filter needed
+    # en, tr, de, la use Latin script - no filter needed
+    # ine-pro uses reconstructed forms with * prefix - allow any
     return True
 
 
@@ -49,26 +47,26 @@ def build_forward_translations():
     """
     Stream raw Wiktextract dump and build forward translations index.
 
-    For each English entry with a 'translations' list:
-    - Iterate translations IN ORDER (primary sense first)
-    - For each (english_word, target_lang) pair, keep ONLY THE FIRST match
-    - Apply script validation
-    - Filter out empty words and "-"
+    For Arabic anchor mode:
+    - Process Arabic language entries (lang_code == 'ar')
+    - Extract translations to target languages
+    - Key by Arabic word, value is dict of {target_lang: translation}
     """
     if not os.path.exists(RAW_WIKTEXTRACT_PATH):
         print(f"ERROR: Raw file not found: {RAW_WIKTEXTRACT_PATH}")
         return
 
-    print(f"=== BUILDING FORWARD TRANSLATIONS INDEX ===")
+    print(f"=== BUILDING FORWARD TRANSLATIONS INDEX (Arabic Anchor) ===")
     print(f"Input: {RAW_WIKTEXTRACT_PATH}")
     print(f"Output: {OUTPUT_PATH}")
     print(f"Target languages: {TARGET_LANGUAGES}")
     print()
 
-    # Result: {english_word: {lang_code: word}}
+    # Result: {arabic_word: {lang_code: word}}
     forward_translations = {}
 
     line_count = 0
+    arabic_entries = 0
     entries_with_trans = 0
 
     print("Streaming raw Wiktextract dump...")
@@ -78,18 +76,19 @@ def build_forward_translations():
             line_count += 1
 
             if line_count % 100000 == 0:
-                print(f"  Processed {line_count:,} lines, {entries_with_trans:,} entries with translations...")
+                print(f"  Processed {line_count:,} lines, {entries_with_trans:,} Arabic entries with translations...")
 
             try:
                 entry = json.loads(line.strip())
             except json.JSONDecodeError:
                 continue
 
-            # Only process English entries
-            if entry.get('lang_code') != 'en':
+            # Only process Arabic entries for Arabic anchor mode
+            if entry.get('lang_code') != 'ar':
                 continue
 
-            word = entry.get('word', '').lower().strip()
+            arabic_entries += 1
+            word = entry.get('word', '').strip()
             if not word:
                 continue
 
@@ -129,8 +128,9 @@ def build_forward_translations():
                     forward_translations[word][lang_code] = trans_word
 
     print(f"\nDone! Processed {line_count:,} lines")
-    print(f"English entries with translations: {entries_with_trans:,}")
-    print(f"Unique English words with translations: {len(forward_translations):,}")
+    print(f"Total Arabic entries: {arabic_entries:,}")
+    print(f"Arabic entries with translations: {entries_with_trans:,}")
+    print(f"Unique Arabic words with translations: {len(forward_translations):,}")
 
     # Stats per language
     print("\n=== STATS PER LANGUAGE ===")
@@ -145,6 +145,7 @@ def build_forward_translations():
 
     # Save
     print(f"\nSaving to {OUTPUT_PATH}...")
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
     with open(OUTPUT_PATH, 'wb') as f:
         pickle.dump(forward_translations, f)
 

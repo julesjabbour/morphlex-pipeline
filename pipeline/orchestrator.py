@@ -52,8 +52,9 @@ class PipelineOrchestrator:
             'ine-pro': analyze_pie,
         }
 
-        # Languages that need English→native translation before calling adapter
-        self.needs_translation = {'he', 'sa', 'grc', 'la'}
+        # Languages that need Arabic→native translation before calling adapter
+        # ALL non-Arabic languages must be translated - Arabic is the anchor language
+        self.needs_translation = {'tr', 'de', 'en', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro'}
 
         # Forward translations cache
         self._forward_translations: Optional[dict] = None
@@ -69,22 +70,28 @@ class PipelineOrchestrator:
                 self._forward_translations = {}
         return self._forward_translations
 
-    def _translate_word(self, english_word: str, target_lang: str) -> Optional[str]:
-        """Translate English word to target language using forward_translations.pkl."""
+    def _translate_word(self, arabic_word: str, target_lang: str) -> Optional[str]:
+        """Translate Arabic word to target language using forward_translations.pkl.
+
+        For Arabic anchor mode, the pickle file maps Arabic words to translations
+        in all other languages.
+        """
         translations = self._load_forward_translations()
-        word_lower = english_word.lower().strip()
-        word_trans = translations.get(word_lower, {})
+        word_normalized = arabic_word.strip()
+        word_trans = translations.get(word_normalized, {})
         return word_trans.get(target_lang)
 
     def analyze(self, word: str, language: str) -> list[dict]:
         """
         Analyze a word using the appropriate language adapter.
 
-        For languages that need native script input (he, sa, grc), the English word
-        is first translated to the target language using forward_translations.pkl.
+        For Arabic anchor mode:
+        - Arabic (ar) input goes directly to CAMeL
+        - All other languages receive translated words from Arabic→X via forward_translations.pkl
+        - PIE (ine-pro) uses Arabic→English, then English→PIE lookup
 
         Args:
-            word: The word to analyze (English for most adapters)
+            word: The word to analyze (Arabic script for Arabic anchor mode)
             language: Language code ('ar', 'tr', 'de', 'en', 'la', 'zh', 'he', 'sa', 'grc', 'ja', 'ine-pro')
 
         Returns:
@@ -96,18 +103,27 @@ class PipelineOrchestrator:
 
         adapter = self.adapters[language]
 
-        # For he, sa, grc, la: translate English→native script first
+        # For all non-Arabic languages: translate Arabic→target language first
         word_to_analyze = word
         if language in self.needs_translation:
-            translated = self._translate_word(word, language)
-            if translated:
-                word_to_analyze = translated
-                # Latin/Morpheus only accepts ASCII - strip macrons/diacritics
-                if language == 'la':
-                    word_to_analyze = strip_diacritics(word_to_analyze)
+            # PIE requires two-step: Arabic→English, then English→PIE lookup
+            if language == 'ine-pro':
+                english_word = self._translate_word(word, 'en')
+                if english_word:
+                    word_to_analyze = english_word
+                else:
+                    # No English translation - cannot lookup PIE
+                    return []
             else:
-                # No translation found - skip this word for this language
-                return []
+                translated = self._translate_word(word, language)
+                if translated:
+                    word_to_analyze = translated
+                    # Latin/Morpheus only accepts ASCII - strip macrons/diacritics
+                    if language == 'la':
+                        word_to_analyze = strip_diacritics(word_to_analyze)
+                else:
+                    # No translation found - skip this word for this language
+                    return []
 
         try:
             results = adapter(word_to_analyze)

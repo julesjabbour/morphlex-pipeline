@@ -1,62 +1,26 @@
 #!/bin/bash
-# Read diagnostic report and output summary/key findings only
+# Arabic Anchor Pipeline Test
+# Tests the pipeline with 10 Arabic words across all 11 languages
+#
+# Usage: bash next_task.sh
 
-REPORT="/mnt/pgdata/morphlex/diagnostic_report.md"
+set -e
 
-if [ ! -f "$REPORT" ]; then
-    echo "ERROR: Diagnostic report not found at $REPORT"
-    exit 1
-fi
+cd /home/user/morphlex-pipeline
 
-# Extract key sections using sed
-echo "=== DIAGNOSTIC REPORT: KEY FINDINGS ==="
-echo ""
+# Activate venv (try both possible locations)
+source /opt/morphlex-venv/bin/activate 2>/dev/null || source /mnt/pgdata/morphlex/venv/bin/activate 2>/dev/null || true
 
-# Title and Executive Summary (lines 1-20)
-sed -n '1,20p' "$REPORT"
+# Suppress warnings at bash level
+export PYTHONWARNINGS="ignore"
 
-echo ""
-echo "---"
-echo ""
-
-# Language-by-Language Code Path Trace table (lines 32-47)
-echo "### Language-by-Language Code Path Trace"
-echo ""
-sed -n '34,47p' "$REPORT"
-
-echo ""
-echo "---"
+echo "=== ARABIC ANCHOR PIPELINE TEST ==="
+echo "Start: $(date -Iseconds)"
 echo ""
 
-# Section 5: False Positive Risk Summary (extract risk levels only)
-echo "### False Positive Risk by Adapter"
-echo ""
-grep -E "^####.*RISK" "$REPORT" | sed 's/^#### /- /'
+# Run the Arabic anchor test
+python3 test_arabic_anchor.py 2>&1
 
 echo ""
-echo "---"
-echo ""
-
-# Section 8: Summary Results Matrix - Current State table
-echo "## Summary Results Matrix"
-echo ""
-echo "### Current State: Arabic Word Input"
-echo ""
-sed -n '516,529p' "$REPORT"
-
-echo ""
-echo "### After Proposed Changes"
-echo ""
-sed -n '532,547p' "$REPORT"
-
-echo ""
-echo "---"
-echo ""
-
-# Section 6: Required Changes summary
-echo "## Required Changes for Arabic Anchor (Section Headers)"
-echo ""
-grep -E "^### [0-9]+\." "$REPORT"
-
-echo ""
-echo "=== END KEY FINDINGS ==="
+echo "End: $(date -Iseconds)"
+echo "=== Test complete ==="
