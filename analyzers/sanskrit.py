@@ -45,8 +45,8 @@ def _extract_sanskrit_root(word: str, etymology_links: list) -> str:
         if link.get('type') == 'root':
             return link.get('source_word', '')
 
-    # Fallback: use normalized word
-    return _normalize_sanskrit(word)
+    # No etymology root found - return empty string (root unknown)
+    return ''
 
 
 def _classify_sanskrit_morph_type(word: str, etymology_links: list) -> str:

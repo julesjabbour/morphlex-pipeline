@@ -15,10 +15,10 @@ def _extract_greek_root(word: str, concept: dict) -> str:
     etymology = concept.get('etymology', []) if isinstance(concept, dict) else []
     for etym in etymology:
         if isinstance(etym, dict) and etym.get('type') == 'root':
-            return etym.get('source_word', word)
+            return etym.get('source_word', '')
 
-    # Fallback to word itself
-    return word
+    # No etymology root found - return empty string (root unknown)
+    return ''
 
 
 def _classify_greek_morph_type(word: str, concept: dict) -> str:
