@@ -2,7 +2,14 @@
 cd /mnt/pgdata/morphlex
 
 # Force-sync with GitHub (handles dirty repo)
-git fetch origin && git reset --hard origin/main
+GIT_BEFORE=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+git fetch origin 2>&1
+FETCH_EXIT=$?
+git reset --hard origin/main 2>&1
+RESET_EXIT=$?
+GIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+echo "[$(date)] Git sync: $GIT_BEFORE -> $GIT_AFTER (fetch=$FETCH_EXIT, reset=$RESET_EXIT)" >> /tmp/pipeline.log
 
 # Check if there's a task to run (use next_task.sh, not pending_task.sh)
 if [ -f next_task.sh ]; then
