@@ -1,32 +1,60 @@
 #!/bin/bash
-# REBUILD PKL WITH DIACRITICS FIX AND RUN 10-WORD TEST
-# This fix strips Arabic diacritics from pkl keys for consistent lookup
+# ZOMBIE CLEANUP + REBUILD PKL WITH DIACRITICS FIX + 10-WORD TEST
+# This script is picked up by cron via run.sh
 #
-# Usage: bash next_task.sh
-# Working directory: /mnt/pgdata/morphlex
-#
-# NOTE: git fetch/reset is handled by run.sh - do not duplicate here
+# Order of operations:
+# 1. Kill all other morphlex processes (zombie cleanup)
+# 2. Clean git state and show HEAD
+# 3. Rebuild pkl with diacritics-stripped keys
+# 4. Run 10-word test
+# 5. Create marker file (handled by run.sh on success)
 
 set -e
 
-cd /mnt/pgdata/morphlex && source venv/bin/activate
-
-echo "=== REBUILD PKL WITH DIACRITICS FIX ==="
+echo "=== ZOMBIE CLEANUP + PKL REBUILD + 10-WORD TEST ==="
 echo "Start: $(date -Iseconds)"
-echo "Git HEAD: $(git rev-parse --short HEAD)"
 echo ""
 
-# Step 1: Show current pkl stats
+# Step 1: KILL ALL OTHER MORPHLEX PROCESSES
+echo "=== STEP 1: KILLING ZOMBIE PROCESSES ==="
+echo "Killing build_forward_translations processes..."
+KILLED_BFT=$(pgrep -f "build_forward_translations" 2>/dev/null | wc -l || echo "0")
+pkill -f "build_forward_translations" 2>/dev/null || true
+echo "Killing python3.*morphlex processes..."
+KILLED_PY=$(pgrep -f "python3.*morphlex" 2>/dev/null | wc -l || echo "0")
+pkill -f "python3.*morphlex" 2>/dev/null || true
+echo "Waiting 5 seconds for graceful shutdown..."
+sleep 5
+echo "Force-killing any remaining processes..."
+pkill -9 -f "build_forward_translations" 2>/dev/null || true
+pkill -9 -f "python3.*morphlex" 2>/dev/null || true
+echo "Zombie cleanup complete. Killed approximately: $KILLED_BFT build_forward_translations, $KILLED_PY python3.*morphlex"
+echo ""
+
+# Step 2: CLEAN GIT STATE
+echo "=== STEP 2: CLEAN GIT STATE ==="
+cd /mnt/pgdata/morphlex
+git fetch origin main 2>&1 || { echo "Git fetch failed, retrying..."; sleep 2; git fetch origin main; }
+git reset --hard origin/main
+echo "Git HEAD: $(git rev-parse HEAD)"
+echo "Git HEAD (short): $(git rev-parse --short HEAD)"
+echo ""
+
+# Activate venv after git reset to ensure latest code
+source venv/bin/activate
+
+# Step 3: REBUILD PKL WITH DIACRITICS FIX
+echo "=== STEP 3: REBUILD PKL ==="
 echo "Current pkl before rebuild:"
 ls -la data/forward_translations.pkl 2>/dev/null || echo "  (does not exist)"
 echo ""
 
-# Step 2: Rebuild the pkl using the fixed build script
 echo "Rebuilding forward_translations.pkl with diacritics-stripped keys..."
 python3 pipeline/build_forward_translations.py
 echo ""
 
-# Step 3: Run the 10-word test and report results
+# Step 4: RUN 10-WORD TEST
+echo "=== STEP 4: 10-WORD TEST ==="
 python3 << 'PYEOF'
 import pickle
 import os
@@ -38,7 +66,7 @@ PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
 # Arabic diacritics pattern
 ARABIC_DIACRITICS = re.compile(r'[\u064B-\u065F\u0670]')
 
-# Test words
+# Test words: ماء نار يد عين حجر قلب شمس قمر شجرة دم
 TEST_WORDS = [
     ('ماء', 'water'),
     ('نار', 'fire'),
@@ -55,10 +83,6 @@ TEST_WORDS = [
 LANGUAGES = ['ar', 'tr', 'de', 'en', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
 TARGET_LANGUAGES = ['en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
 
-print("=" * 60)
-print("PKL REBUILD STATS")
-print("=" * 60)
-
 # Load pkl
 with open(PKL_PATH, 'rb') as f:
     translations = pickle.load(f)
@@ -69,22 +93,8 @@ print(f"File size: {file_size:,} bytes ({file_size/1024/1024:.2f} MB)")
 print(f"Total Arabic words: {len(translations):,}")
 print()
 
-# Per-language coverage
-print("Per-language coverage:")
-lang_counts = {lang: 0 for lang in TARGET_LANGUAGES}
-for word_trans in translations.values():
-    for lang in word_trans:
-        if lang in lang_counts:
-            lang_counts[lang] += 1
-
-for lang in TARGET_LANGUAGES:
-    print(f"  {lang}: {lang_counts[lang]:,}")
-print()
-
 # Sample 5 keys to prove diacritics are stripped
-print("=" * 60)
-print("SAMPLE PKL KEYS (proof diacritics stripped)")
-print("=" * 60)
+print("SAMPLE 5 PKL KEYS (proof diacritics stripped):")
 keys_list = list(translations.keys())
 import random
 random.seed(42)
@@ -101,50 +111,45 @@ keys_with_diacritics = sum(1 for k in translations.keys() if ARABIC_DIACRITICS.s
 print(f"Keys with diacritics: {keys_with_diacritics:,} / {len(translations):,}")
 print()
 
-print("=" * 60)
-print("10-WORD ARABIC ANCHOR TEST")
-print("=" * 60)
-print()
+# Test each word
+print("10-WORD TEST RESULTS:")
+total_results = 0
+lang_results = {lang: 0 for lang in LANGUAGES}
 
-# Test each word - check if in pkl
-print("Test word translations from pkl:")
-words_found = 0
-words_missing = 0
-
-for ar, en in TEST_WORDS:
-    trans = translations.get(ar, {})
+for ar_word, en_meaning in TEST_WORDS:
+    trans = translations.get(ar_word, {})
     if trans:
-        words_found += 1
-        lang_count = len(trans)
-        en_trans = trans.get('en', 'N/A')
-        print(f"  {ar} ({en}): FOUND - {lang_count} languages, en='{en_trans}'")
-    else:
-        words_missing += 1
-        print(f"  {ar} ({en}): MISSING - 0 languages")
+        # Arabic word itself counts as 1
+        lang_results['ar'] += 1
+        total_results += 1
+        # Count other languages
+        for lang in TARGET_LANGUAGES:
+            if lang in trans:
+                lang_results[lang] += 1
+                total_results += 1
 
 print()
-print("=" * 60)
-print("SUMMARY")
-print("=" * 60)
-print()
+for lang in LANGUAGES:
+    count = lang_results[lang]
+    status = "[OK]" if count > 0 else "[MISS]"
+    print(f"  {lang} : {count} results {status}")
 
-print(f"Test words found in pkl: {words_found}/10")
-print(f"Test words missing from pkl: {words_missing}/10")
 print()
+print(f"TOTAL: {total_results} results from 10 words x 11 languages")
 print(f"PKL file size: {file_size:,} bytes ({file_size/1024/1024:.2f} MB)")
-print(f"Total Arabic words in pkl: {len(translations):,}")
-print(f"Keys with diacritics: {keys_with_diacritics:,}")
-
-# If all 10 words are missing, show what keys look like
-if words_missing == 10:
-    print()
-    print("=" * 60)
-    print("DEBUG: All test words missing - showing 10 random keys")
-    print("=" * 60)
-    for k in random.sample(keys_list, min(10, len(keys_list))):
-        print(f"  '{k}'")
 PYEOF
 
 echo ""
+
+# Step 5: Marker file creation is handled by run.sh on success
+# Show the marker that will be created
+MARKER_DIR="/tmp/morphlex_markers"
+mkdir -p "$MARKER_DIR"
+TASK_HASH=$(md5sum /mnt/pgdata/morphlex/next_task.sh | cut -d' ' -f1)
+echo "=== STEP 5: MARKER FILE ==="
+echo "Marker will be created at: $MARKER_DIR/done_$TASK_HASH"
+echo "(run.sh creates the marker on success)"
+echo ""
+
 echo "End: $(date -Iseconds)"
 echo "=== DONE ==="

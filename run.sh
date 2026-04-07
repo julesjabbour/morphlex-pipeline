@@ -1,4 +1,12 @@
 #!/bin/bash
+# Cron runner for morphlex pipeline
+# Called every 2 minutes by cron
+#
+# Features:
+# - flock to prevent concurrent runs
+# - git fetch/reset to get latest code
+# - Marker file system to prevent re-running same task
+
 cd /mnt/pgdata/morphlex
 
 LOCKFILE="/tmp/morphlex_run.lock"
