@@ -1,6 +1,6 @@
 #!/bin/bash
-# VERIFY NEW PKL WITH 10-WORD ARABIC ANCHOR TEST
-# Reports pkl rebuild stats and runs pipeline end-to-end test
+# DIAGNOSE PKL KEY MISMATCH AND FIX
+# The pkl has 19,948 keys but test words don't match - likely Arabic diacritics issue
 #
 # Usage: bash next_task.sh
 # Working directory: /mnt/pgdata/morphlex
@@ -9,23 +9,253 @@ set -e
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== ARABIC ANCHOR TEST WITH NEW PKL ==="
+echo "=== DIAGNOSE PKL KEY MISMATCH ==="
 echo "Start: $(date -Iseconds)"
 echo ""
 
-# First report the pkl stats from the rebuild
+# Part 1: Diagnose the key mismatch
+python3 << 'PYEOF'
+import pickle
+import unicodedata
+import re
+import os
+
+PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
+
+print("=" * 60)
+print("DIAGNOSTIC: PKL KEY ANALYSIS")
+print("=" * 60)
+
+# Test words (plain Arabic without diacritics)
+test_words = ['ماء', 'نار', 'يد', 'عين', 'حجر', 'قلب', 'شمس', 'قمر', 'شجرة', 'دم']
+
+# Arabic tashkeel (diacritics) range: U+064B to U+065F plus U+0670
+ARABIC_DIACRITICS = re.compile(r'[\u064B-\u065F\u0670]')
+
+def strip_arabic_diacritics(text):
+    """Remove Arabic tashkeel/diacritics."""
+    return ARABIC_DIACRITICS.sub('', text)
+
+def show_codepoints(s):
+    """Show Unicode codepoints for a string."""
+    return ' '.join(f'U+{ord(c):04X}' for c in s)
+
+# Load pkl
+with open(PKL_PATH, 'rb') as f:
+    translations = pickle.load(f)
+
+print(f"Total keys in pkl: {len(translations):,}")
+print()
+
+# Sample first 20 keys
+keys_list = list(translations.keys())[:30]
+print("First 30 pkl keys:")
+for i, k in enumerate(keys_list, 1):
+    has_diacritics = bool(ARABIC_DIACRITICS.search(k))
+    stripped = strip_arabic_diacritics(k)
+    diac_note = " [HAS DIACRITICS]" if has_diacritics else ""
+    print(f"  {i:2}. '{k}' -> stripped: '{stripped}'{diac_note}")
+
+print()
+print("=" * 60)
+print("TEST WORD LOOKUP ATTEMPTS")
+print("=" * 60)
+print()
+
+# Try to find test words
+for word in test_words:
+    # Direct lookup
+    found_direct = word in translations
+
+    # Try to find keys that match when stripped
+    matches = []
+    for k in translations.keys():
+        if strip_arabic_diacritics(k) == word:
+            matches.append(k)
+
+    print(f"Test word: '{word}' ({show_codepoints(word)})")
+    print(f"  Direct lookup: {'FOUND' if found_direct else 'NOT FOUND'}")
+    if matches:
+        print(f"  Matches when stripped ({len(matches)}):")
+        for m in matches[:3]:
+            print(f"    - '{m}' ({show_codepoints(m)})")
+            trans = translations[m]
+            print(f"      Translations: en={trans.get('en', 'N/A')}, de={trans.get('de', 'N/A')}")
+    else:
+        print(f"  No matches even when stripping diacritics")
+    print()
+
+# Count keys with diacritics
+keys_with_diacritics = sum(1 for k in translations.keys() if ARABIC_DIACRITICS.search(k))
+print("=" * 60)
+print("SUMMARY")
+print("=" * 60)
+print(f"Keys WITH Arabic diacritics: {keys_with_diacritics:,}")
+print(f"Keys WITHOUT diacritics: {len(translations) - keys_with_diacritics:,}")
+print()
+
+if keys_with_diacritics > len(translations) * 0.5:
+    print("DIAGNOSIS: Majority of pkl keys have Arabic diacritics (tashkeel).")
+    print("FIX NEEDED: Strip diacritics when building pkl keys.")
+else:
+    print("DIAGNOSIS: Keys don't have significant diacritics.")
+    print("Need further investigation...")
+PYEOF
+
+echo ""
+echo "=" * 60
+echo "Now fixing the build script and rebuilding..."
+echo "=" * 60
+echo ""
+
+# Part 2: Fix the build script to strip Arabic diacritics
+python3 << 'PYEOF'
+import gzip
+import json
+import os
+import pickle
+import re
+
+RAW_WIKTEXTRACT_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
+OUTPUT_PATH = "/mnt/pgdata/morphlex/data/forward_translations.pkl"
+TARGET_LANGUAGES = ['en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
+
+# Arabic diacritics (tashkeel) to strip from keys
+ARABIC_DIACRITICS = re.compile(r'[\u064B-\u065F\u0670]')
+
+def strip_arabic_diacritics(text):
+    """Remove Arabic tashkeel/diacritics for consistent key lookup."""
+    return ARABIC_DIACRITICS.sub('', text)
+
+def _valid_script(lang, word):
+    if lang == 'zh':
+        return any('\u4e00' <= c <= '\u9fff' for c in word)
+    elif lang == 'he':
+        return any('\u0590' <= c <= '\u05ff' for c in word)
+    elif lang == 'ja':
+        return any(('\u3040' <= c <= '\u30ff') or ('\u4e00' <= c <= '\u9fff') for c in word)
+    elif lang == 'sa':
+        return any('\u0900' <= c <= '\u097f' for c in word)
+    elif lang == 'grc':
+        return any(('\u0370' <= c <= '\u03ff') or ('\u1f00' <= c <= '\u1fff') for c in word)
+    elif lang == 'ar':
+        return any('\u0600' <= c <= '\u06ff' for c in word)
+    return True
+
+def _extract_translations_from_entry(entry):
+    translations = entry.get('translations', [])
+    if not translations or not isinstance(translations, list):
+        return {}
+    result = {}
+    for trans in translations:
+        if not isinstance(trans, dict):
+            continue
+        lang_code = trans.get('lang_code', trans.get('code', ''))
+        trans_word = trans.get('word', '').strip()
+        if not lang_code or not trans_word or trans_word == '-':
+            continue
+        if not _valid_script(lang_code, trans_word):
+            continue
+        if lang_code not in result:
+            result[lang_code] = trans_word
+    return result
+
+print("=== REBUILDING FORWARD TRANSLATIONS (with diacritic-stripped keys) ===")
+print(f"Input: {RAW_WIKTEXTRACT_PATH}")
+print(f"Output: {OUTPUT_PATH}")
+print()
+
+forward_translations = {}
+line_count = 0
+entries_with_arabic = 0
+
+print("Streaming Wiktextract dump...")
+
+with gzip.open(RAW_WIKTEXTRACT_PATH, 'rt', encoding='utf-8') as f:
+    for line in f:
+        line_count += 1
+        if line_count % 500000 == 0:
+            print(f"  Processed {line_count:,} lines, {entries_with_arabic:,} entries...")
+
+        try:
+            entry = json.loads(line.strip())
+        except json.JSONDecodeError:
+            continue
+
+        if entry.get('lang_code') != 'en':
+            continue
+
+        english_word = entry.get('word', '').strip()
+        if not english_word:
+            continue
+
+        all_trans = _extract_translations_from_entry(entry)
+        arabic_word_raw = all_trans.get('ar')
+        if not arabic_word_raw:
+            continue
+
+        if not _valid_script('ar', arabic_word_raw):
+            continue
+
+        # KEY FIX: Strip Arabic diacritics from the key
+        arabic_word = strip_arabic_diacritics(arabic_word_raw).strip()
+        if not arabic_word:
+            continue
+
+        entries_with_arabic += 1
+
+        if arabic_word not in forward_translations:
+            forward_translations[arabic_word] = {}
+
+        # Add English word
+        if 'en' not in forward_translations[arabic_word]:
+            forward_translations[arabic_word]['en'] = english_word
+
+        # Add other translations
+        for lang_code in TARGET_LANGUAGES:
+            if lang_code == 'en':
+                continue
+            if lang_code in all_trans and lang_code not in forward_translations[arabic_word]:
+                forward_translations[arabic_word][lang_code] = all_trans[lang_code]
+
+print(f"\nProcessed {line_count:,} lines")
+print(f"English entries with Arabic: {entries_with_arabic:,}")
+print(f"Unique Arabic words (diacritics stripped): {len(forward_translations):,}")
+
+# Stats per language
+print("\nPer-language coverage:")
+lang_counts = {lang: 0 for lang in TARGET_LANGUAGES}
+for word_trans in forward_translations.values():
+    for lang in word_trans:
+        if lang in lang_counts:
+            lang_counts[lang] += 1
+
+for lang in TARGET_LANGUAGES:
+    print(f"  {lang}: {lang_counts[lang]:,}")
+
+# Save
+print(f"\nSaving to {OUTPUT_PATH}...")
+with open(OUTPUT_PATH, 'wb') as f:
+    pickle.dump(forward_translations, f)
+
+file_size = os.path.getsize(OUTPUT_PATH)
+print(f"Saved: {file_size:,} bytes ({file_size/1024/1024:.2f} MB)")
+print(f"Total Arabic words: {len(forward_translations):,}")
+PYEOF
+
+echo ""
+echo "=" * 60
+echo "Verifying test words are now found..."
+echo "=" * 60
+echo ""
+
+# Part 3: Quick verification (NO heavy ML models to avoid OOM)
 python3 << 'PYEOF'
 import pickle
 import os
-import sys
-from datetime import datetime
-from io import StringIO
 
 PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
-FULL_OUTPUT_PATH = '/mnt/pgdata/morphlex/arabic_anchor_test_full_pkl.md'
-
-# Test words
-TEST_WORDS = [
+test_words = [
     ('ماء', 'water'),
     ('نار', 'fire'),
     ('يد', 'hand'),
@@ -38,202 +268,27 @@ TEST_WORDS = [
     ('دم', 'blood'),
 ]
 
-LANGUAGES = ['ar', 'tr', 'de', 'en', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
-TARGET_LANGUAGES = ['en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
-
-print("=" * 60)
-print("PKL REBUILD STATS (from truncated Slack output)")
-print("=" * 60)
-
-# Load and report pkl stats
-if not os.path.exists(PKL_PATH):
-    print(f"ERROR: {PKL_PATH} not found!")
-    sys.exit(1)
-
-pkl_size = os.path.getsize(PKL_PATH)
-print(f"PKL file: {PKL_PATH}")
-print(f"File size: {pkl_size:,} bytes ({pkl_size/1024/1024:.2f} MB)")
-print()
-
 with open(PKL_PATH, 'rb') as f:
-    forward_translations = pickle.load(f)
+    translations = pickle.load(f)
 
-print(f"Total Arabic words in pkl: {len(forward_translations):,}")
-print()
-
-# Per-language coverage
-print("Per-language coverage:")
-lang_counts = {lang: 0 for lang in TARGET_LANGUAGES}
-for word_trans in forward_translations.values():
-    for lang in word_trans:
-        if lang in lang_counts:
-            lang_counts[lang] += 1
-
-for lang in TARGET_LANGUAGES:
-    print(f"  {lang}: {lang_counts[lang]:,} Arabic words have translations")
-
-print()
-print("=" * 60)
-print("10-WORD ARABIC ANCHOR TEST")
-print("=" * 60)
-
-# Full output for markdown file
-full_output = StringIO()
-
-def write_full(msg):
-    full_output.write(msg + "\n")
-
-write_full("# Arabic Anchor Pipeline Test - Full PKL Verification")
-write_full("")
-write_full(f"**Test date:** {datetime.now().isoformat()}")
-write_full(f"**PKL file:** {PKL_PATH}")
-write_full(f"**PKL size:** {pkl_size:,} bytes ({pkl_size/1024/1024:.2f} MB)")
-write_full(f"**Total Arabic words:** {len(forward_translations):,}")
-write_full("")
-write_full("## Per-language coverage in PKL")
-write_full("")
-for lang in TARGET_LANGUAGES:
-    write_full(f"- {lang}: {lang_counts[lang]:,}")
-write_full("")
-write_full("---")
-write_full("")
-
-# Show translations for test words
-write_full("## Test Word Translations")
-write_full("")
-
-print()
-print("Test word translations from pkl:")
-for ar_word, en_meaning in TEST_WORDS:
-    trans = forward_translations.get(ar_word, {})
-    status = "FOUND" if trans else "MISSING"
-    print(f"  {ar_word} ({en_meaning}): {status} - {len(trans)} languages")
-    write_full(f"### {ar_word} ({en_meaning})")
+print("Test word verification (pkl lookup only):")
+found_count = 0
+for ar, en in test_words:
+    trans = translations.get(ar, {})
     if trans:
-        for lang, word in sorted(trans.items()):
-            write_full(f"- {lang}: {word}")
+        found_count += 1
+        en_trans = trans.get('en', 'N/A')
+        lang_count = len(trans)
+        print(f"  {ar} ({en}): FOUND - {lang_count} languages, en='{en_trans}'")
     else:
-        write_full("- NOT FOUND in pkl")
-    write_full("")
+        print(f"  {ar} ({en}): NOT FOUND")
 
 print()
-
-# Import orchestrator and run analysis
-sys.path.insert(0, '/mnt/pgdata/morphlex')
-from pipeline.orchestrator import PipelineOrchestrator
-
-write_full("---")
-write_full("")
-write_full("## Detailed Analysis Results")
-write_full("")
-
-orchestrator = PipelineOrchestrator()
-
-# Track results
-results_by_lang = {lang: {'count': 0, 'ok': 0, 'empty': 0, 'words_received': [], 'all_results': []} for lang in LANGUAGES}
-all_results = []
-
-for arabic_word, english_meaning in TEST_WORDS:
-    word_trans = forward_translations.get(arabic_word, {})
-    write_full(f"### Arabic: {arabic_word} ({english_meaning})")
-    write_full("")
-    write_full(f"Translations from pkl: {word_trans}")
-    write_full("")
-
-    for lang in LANGUAGES:
-        # Determine what word the adapter will receive
-        if lang == 'ar':
-            word_received = arabic_word
-        elif lang == 'ine-pro':
-            word_received = word_trans.get('en', 'NO_TRANSLATION')
-        else:
-            word_received = word_trans.get(lang, 'NO_TRANSLATION')
-
-        try:
-            results = orchestrator.analyze(arabic_word, lang)
-            count = len(results) if results else 0
-        except Exception as e:
-            results = []
-            count = 0
-            write_full(f"**ERROR** {lang}: {e}")
-
-        results_by_lang[lang]['count'] += count
-        results_by_lang[lang]['words_received'].append(word_received)
-        results_by_lang[lang]['all_results'].extend(results or [])
-
-        if count > 0:
-            results_by_lang[lang]['ok'] += 1
-            all_results.extend(results)
-        else:
-            results_by_lang[lang]['empty'] += 1
-
-        # Write detailed results
-        write_full(f"**{lang}**: received `{word_received}` -> {count} results")
-        if results:
-            for r in results:
-                lemma = r.get('lemma', '?')
-                pos = r.get('pos', '?')
-                root = r.get('root', '')
-                morph = r.get('morphological_features', {})
-                write_full(f"  - lemma={lemma}, pos={pos}, root={root}, features={morph}")
-        write_full("")
-
-    write_full("---")
-    write_full("")
-
-# Summary table in markdown
-write_full("## Per-Language Summary Table")
-write_full("")
-write_full("| Language | Total | OK | Empty | Status | Sample Words Received |")
-write_full("|----------|------:|---:|------:|--------|----------------------|")
-
-summary_lines = []
-for lang in LANGUAGES:
-    stats = results_by_lang[lang]
-    count = stats['count']
-    ok = stats['ok']
-    empty = stats['empty']
-    words = stats['words_received'][:3]
-
-    if lang == 'ar':
-        status = '[OK]' if count > 0 else '[EMPTY]'
-    else:
-        has_arabic_input = any('\u0600' <= c <= '\u06ff' for w in words for c in str(w))
-        if has_arabic_input:
-            status = '[WRONG-LANG]'
-        elif count > 0:
-            status = '[OK]'
-        else:
-            status = '[EMPTY]'
-
-    sample_words = ', '.join(str(w)[:15] for w in words)
-    write_full(f"| {lang} | {count} | {ok} | {empty} | {status} | {sample_words} |")
-    summary_lines.append((lang, count, status))
-
-write_full("")
-write_full(f"**TOTAL:** {len(all_results)} results from {len(TEST_WORDS)} words x {len(LANGUAGES)} languages")
-write_full("")
-
-# Write full output to file
-with open(FULL_OUTPUT_PATH, 'w', encoding='utf-8') as f:
-    f.write(full_output.getvalue())
-
-# Print summary to stdout
-print("=" * 60)
-print("SUMMARY")
-print("=" * 60)
-print()
-print("Per-language results:")
-for lang, count, status in summary_lines:
-    print(f"  {lang:<10} : {count:>4} results {status}")
-
-print()
-print(f"TOTAL: {len(all_results)} results from {len(TEST_WORDS)} words x {len(LANGUAGES)} languages")
-print()
-print(f"PKL file size: {pkl_size:,} bytes ({pkl_size/1024/1024:.2f} MB)")
-print(f"Full details: {FULL_OUTPUT_PATH}")
+print(f"Found: {found_count}/10 test words")
+print(f"PKL size: {os.path.getsize(PKL_PATH):,} bytes")
+print(f"Total keys: {len(translations):,}")
 PYEOF
 
 echo ""
 echo "End: $(date -Iseconds)"
-echo "=== DONE ==="
+echo "=== DIAGNOSTIC COMPLETE ==="
