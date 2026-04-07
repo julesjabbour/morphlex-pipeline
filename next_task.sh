@@ -1,8 +1,11 @@
 #!/bin/bash
-# Rebuild forward_translations.pkl from full Wiktextract data
+# Rebuild forward_translations.pkl from full Wiktextract data (INVERTED LOGIC)
 #
-# Reads Arabic entries from data/raw-wiktextract-data.jsonl.gz
-# Extracts translations to all 10 target languages (en, tr, de, la, zh, ja, he, sa, grc, ine-pro)
+# The Wiktextract dump is from English Wiktionary - entries are English words with translations.
+# This script inverts the mapping:
+# 1. Finds English entries that have an Arabic translation
+# 2. Uses the Arabic word as the KEY
+# 3. Collects all other translations (en, tr, de, la, zh, ja, he, sa, grc, ine-pro) as VALUES
 # Builds the full Arabic-to-X forward_translations.pkl
 #
 # Usage: bash next_task.sh
