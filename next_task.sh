@@ -1,10 +1,9 @@
 #!/bin/bash
-# Arabic Anchor Pipeline Test - Full Output to File
-# Tests the pipeline with 10 Arabic words across all 11 languages
+# Rebuild forward_translations.pkl from full Wiktextract data
 #
-# Writes FULL untruncated output (including all library warnings) to:
-#   /mnt/pgdata/morphlex/arabic_anchor_test_full.md
-# Outputs only a short summary to stdout (for Slack)
+# Reads Arabic entries from data/raw-wiktextract-data.jsonl.gz
+# Extracts translations to all 10 target languages (en, tr, de, la, zh, ja, he, sa, grc, ine-pro)
+# Builds the full Arabic-to-X forward_translations.pkl
 #
 # Usage: bash next_task.sh
 # Working directory: /mnt/pgdata/morphlex
@@ -13,40 +12,36 @@ set -e
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-OUTPUT_FILE="/mnt/pgdata/morphlex/arabic_anchor_test_full.md"
-WARNINGS_FILE="/mnt/pgdata/morphlex/arabic_anchor_warnings.tmp"
-
-echo "=== ARABIC ANCHOR PIPELINE TEST ==="
+echo "=== REBUILD FORWARD TRANSLATIONS FROM WIKTEXTRACT ==="
 echo "Start: $(date -Iseconds)"
 echo ""
 
-# Run the test, capturing stderr (warnings) separately
-# The Python script writes its analysis to OUTPUT_FILE and summary to stdout
-python3 test_arabic_anchor.py 2>"$WARNINGS_FILE"
-
-# If warnings were captured, prepend them to the output file
-if [ -s "$WARNINGS_FILE" ]; then
-    # Create a temp file with warnings header + warnings + original output
-    TEMP_OUTPUT="${OUTPUT_FILE}.tmp"
-    {
-        echo "## Library Warnings (Raw Output)"
-        echo ""
-        echo "All warnings from Zeyrek, CAMeL, spaCy, and other libraries:"
-        echo ""
-        echo '```'
-        cat "$WARNINGS_FILE"
-        echo '```'
-        echo ""
-        echo "---"
-        echo ""
-        cat "$OUTPUT_FILE"
-    } > "$TEMP_OUTPUT"
-    mv "$TEMP_OUTPUT" "$OUTPUT_FILE"
+# Check that raw data exists
+if [ ! -f "data/raw-wiktextract-data.jsonl.gz" ]; then
+    echo "ERROR: data/raw-wiktextract-data.jsonl.gz not found"
+    exit 1
 fi
 
-# Clean up temp warnings file
-rm -f "$WARNINGS_FILE"
+# Show current file size
+if [ -f "data/forward_translations.pkl" ]; then
+    BEFORE_SIZE=$(stat -c%s "data/forward_translations.pkl")
+    echo "Current forward_translations.pkl: $BEFORE_SIZE bytes"
+else
+    echo "No existing forward_translations.pkl"
+fi
+
+# Run the build script
+python3 pipeline/build_forward_translations.py
+
+# Show new file size
+if [ -f "data/forward_translations.pkl" ]; then
+    AFTER_SIZE=$(stat -c%s "data/forward_translations.pkl")
+    AFTER_SIZE_MB=$(echo "scale=2; $AFTER_SIZE / 1048576" | bc)
+    echo ""
+    echo "=== REBUILD COMPLETE ==="
+    echo "New forward_translations.pkl: ${AFTER_SIZE_MB}MB ($AFTER_SIZE bytes)"
+fi
 
 echo ""
 echo "End: $(date -Iseconds)"
-echo "=== Test complete ==="
+echo "=== Build complete ==="
