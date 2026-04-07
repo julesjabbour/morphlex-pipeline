@@ -9,16 +9,16 @@ set -e
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== FIX FORWARD TRANSLATIONS BUILD ==="
+echo "=== FIX FORWARD TRANSLATIONS v2 (1d7d56b+) ==="
 echo "Start: $(date -Iseconds)"
-echo "Git commit on VM: $(git rev-parse --short HEAD)"
+echo "VM commit BEFORE sync: $(git rev-parse --short HEAD)"
 echo ""
 
 # Force sync with latest main
 echo "=== SYNCING WITH REMOTE ==="
-git fetch origin main 2>&1 || echo "Warning: git fetch failed"
-git reset --hard origin/main 2>&1 || echo "Warning: git reset failed"
-echo "After sync: $(git rev-parse --short HEAD)"
+git fetch origin main 2>&1 || echo "WARN: git fetch failed"
+git reset --hard origin/main 2>&1 || echo "WARN: git reset failed"
+echo "VM commit AFTER sync: $(git rev-parse --short HEAD)"
 echo ""
 
 python3 << 'PYEOF'
