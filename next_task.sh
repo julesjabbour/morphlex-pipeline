@@ -1,54 +1,99 @@
 #!/bin/bash
-# Task: Diagnostic - cat logs to diagnose v2 batch Slack failure
+# Task: Show v2 batch results - pkl rebuild log, CSV headers, row count, sample data, stats
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 GIT_HEAD=$(git rev-parse HEAD)
 START_TIME=$(date -Iseconds)
 
-echo "=== DIAGNOSTIC: v2 BATCH SLACK FAILURE ==="
+echo "=== V2 BATCH RESULTS ==="
 echo "Start: $START_TIME"
 echo "Git HEAD: $GIT_HEAD"
 echo ""
 
-echo "=== LAST 20 LINES OF /tmp/morphlex_cron.log ==="
-tail -20 /tmp/morphlex_cron.log 2>&1 || echo "(file not found or empty)"
-echo ""
-
-echo "=== LAST 20 LINES OF /tmp/morphlex_debug.log ==="
-tail -20 /tmp/morphlex_debug.log 2>&1 || echo "(file not found or empty)"
-echo ""
-
-echo "=== CONTENTS OF batch_1000_v2_errors.md ==="
-if [ -f /mnt/pgdata/morphlex/reports/batch_1000_v2_errors.md ]; then
-    cat /mnt/pgdata/morphlex/reports/batch_1000_v2_errors.md
+echo "=== 1. PKL REBUILD LOG ==="
+if [ -f /mnt/pgdata/morphlex/reports/pkl_rebuild_log.md ]; then
+    cat /mnt/pgdata/morphlex/reports/pkl_rebuild_log.md
 else
-    echo "(file does not exist)"
+    echo "(pkl_rebuild_log.md not found - checking for any pkl-related task output)"
+    # Look for pkl rebuild output in task_output files
+    LATEST=$(ls -t /mnt/pgdata/morphlex/reports/task_output_*.md 2>/dev/null | head -5)
+    for f in $LATEST; do
+        if grep -q "forward_translations.pkl\|pkl rebuild\|key count" "$f" 2>/dev/null; then
+            echo "Found in: $f"
+            grep -A5 -B2 "key count\|pkl\|forward_translations" "$f" | head -50
+            break
+        fi
+    done
 fi
 echo ""
 
-echo "=== STATS SECTION FROM batch_1000_v2 OUTPUT ==="
-# Find the most recent task_output file from around 21:48-22:00
+echo "=== 2. V2 CSV COLUMN HEADERS ==="
+if [ -f /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv ]; then
+    head -1 /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv
+    echo ""
+    echo "Column count: $(head -1 /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv | tr ',' '\n' | wc -l)"
+else
+    echo "(batch_1000_v2_test.csv not found)"
+fi
+echo ""
+
+echo "=== 3. V2 CSV ROW COUNT ==="
+if [ -f /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv ]; then
+    ROWS=$(wc -l < /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv)
+    echo "Total rows (including header): $ROWS"
+    echo "Data rows: $((ROWS - 1))"
+else
+    echo "(batch_1000_v2_test.csv not found)"
+fi
+echo ""
+
+echo "=== 4. SAMPLE DATA WITH NEW COLUMNS ==="
+if [ -f /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv ]; then
+    # Show first 10 data rows with all columns
+    echo "First 10 rows:"
+    head -11 /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv | column -t -s',' 2>/dev/null || head -11 /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv
+    echo ""
+    # Show sample of filled root, morph_type, compound_components columns
+    echo "Sample rows with filled root column:"
+    awk -F',' 'NR>1 && $5!="" {print NR": "$0}' /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv | head -5
+    echo ""
+    echo "Sample rows with filled morph_type:"
+    awk -F',' 'NR>1 && $6!="" && $6!="UNKNOWN" {print NR": "$0}' /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv | head -5
+    echo ""
+    echo "Sample rows with compound_components:"
+    awk -F',' 'NR>1 && $9!="" {print NR": "$0}' /mnt/pgdata/morphlex/reports/batch_1000_v2_test.csv | head -5
+else
+    echo "(batch_1000_v2_test.csv not found)"
+fi
+echo ""
+
+echo "=== 5. STATS SUMMARY ==="
+if [ -f /mnt/pgdata/morphlex/reports/batch_1000_v2_errors.md ]; then
+    echo "--- From batch_1000_v2_errors.md ---"
+    cat /mnt/pgdata/morphlex/reports/batch_1000_v2_errors.md
+else
+    echo "(batch_1000_v2_errors.md not found)"
+fi
+echo ""
+
+# Also check for stats in task_output files
+echo "--- From task_output files ---"
 LATEST_OUTPUT=$(ls -t /mnt/pgdata/morphlex/reports/task_output_*.md 2>/dev/null | head -1)
 if [ -n "$LATEST_OUTPUT" ]; then
-    echo "Reading from: $LATEST_OUTPUT"
-    echo ""
-    # Extract just the stats section (after "=== STATS SUMMARY ===" to end)
-    if grep -q "STATS SUMMARY\|Stats Summary\|=== OUTPUT FILES ===" "$LATEST_OUTPUT"; then
-        sed -n '/STATS SUMMARY\|Stats Summary/,$p' "$LATEST_OUTPUT" | head -100
+    echo "Latest output file: $LATEST_OUTPUT"
+    if grep -q "STATS SUMMARY\|Stats Summary\|Root fill rate\|morph_type" "$LATEST_OUTPUT"; then
+        sed -n '/STATS SUMMARY\|Stats Summary\|=== OUTPUT/,$p' "$LATEST_OUTPUT" | head -80
     else
-        # If no stats section, show last 50 lines
-        echo "(No stats section found, showing last 50 lines)"
-        tail -50 "$LATEST_OUTPUT"
+        echo "(No stats section found in $LATEST_OUTPUT)"
     fi
 else
     echo "(no task_output file found)"
 fi
 echo ""
 
-echo "=== ALL BATCH_1000_V2 FILES ==="
-ls -la /mnt/pgdata/morphlex/reports/batch_1000_v2* 2>/dev/null || echo "(no v2 files found)"
-ls -la /mnt/pgdata/morphlex/reports/pkl_rebuild_log.md 2>/dev/null || echo "(pkl_rebuild_log.md not found)"
+echo "=== 6. ALL BATCH FILES ==="
+ls -la /mnt/pgdata/morphlex/reports/batch* /mnt/pgdata/morphlex/reports/pkl* 2>/dev/null || echo "(no batch or pkl files found)"
 echo ""
 
 echo "=== TASK COMPLETE ==="

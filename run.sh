@@ -43,6 +43,6 @@ else
     STATUS="*Task FAILED (exit code $EXIT_CODE)*"
 fi
 
-# Post to Slack
-bash slack_report.sh "$STATUS
-$OUTPUT"
+# Post to Slack via stdin (avoids "Argument list too long" for large outputs)
+echo "$STATUS
+$OUTPUT" | bash slack_report.sh

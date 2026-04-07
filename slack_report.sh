@@ -9,7 +9,9 @@ if [ ! -f "$CONFIG" ]; then
   exit 1
 fi
 WEBHOOK_URL=$(cat "$CONFIG")
-MESSAGE="$1"
+
+# Read message from stdin (handles any size output without "Argument list too long")
+MESSAGE=$(cat)
 
 # Save full untruncated output to reports directory
 REPORTS_DIR="/mnt/pgdata/morphlex/reports"
@@ -20,15 +22,17 @@ echo "$MESSAGE" > "$REPORT_FILE"
 echo "Full output saved to: $REPORT_FILE"
 
 # Post to Slack - split into chunks if over 3500 chars
-python3 -c "
+# Pass message via stdin to avoid "Argument list too long" for large outputs
+echo "$MESSAGE" | python3 -c "
 import json
 import urllib.request
 import urllib.error
 import sys
 import traceback
 
-msg = sys.argv[1]
-webhook_url = sys.argv[2]
+# Read message from stdin (handles any size)
+msg = sys.stdin.read()
+webhook_url = sys.argv[1]
 max_chars = 3500
 
 def post_to_slack(text):
@@ -60,7 +64,7 @@ if len(msg) <= max_chars:
     success = post_to_slack(msg)
 else:
     # Split into chunks at line boundaries
-    lines = msg.split('\n')
+    lines = msg.split('\\n')
     chunks = []
     current_chunk = []
     current_len = 0
@@ -68,7 +72,7 @@ else:
     for line in lines:
         line_len = len(line) + 1  # +1 for newline
         if current_len + line_len > max_chars and current_chunk:
-            chunks.append('\n'.join(current_chunk))
+            chunks.append('\\n'.join(current_chunk))
             current_chunk = [line]
             current_len = line_len
         else:
@@ -76,12 +80,12 @@ else:
             current_len += line_len
 
     if current_chunk:
-        chunks.append('\n'.join(current_chunk))
+        chunks.append('\\n'.join(current_chunk))
 
     # Post each chunk with part indicator
     total = len(chunks)
     for i, chunk in enumerate(chunks, 1):
-        header = f'[Part {i}/{total}]\n' if total > 1 else ''
+        header = f'[Part {i}/{total}]\\n' if total > 1 else ''
         if not post_to_slack(header + chunk):
             success = False
             print(f'Failed to post chunk {i}/{total}', file=sys.stderr)
@@ -89,7 +93,7 @@ else:
 if not success:
     sys.exit(1)
 print(f'Successfully posted to Slack ({len(msg)} chars)')
-" "$MESSAGE" "$WEBHOOK_URL" 2>&1
+" "$WEBHOOK_URL" 2>&1
 
 SLACK_EXIT=$?
 if [ $SLACK_EXIT -ne 0 ]; then
