@@ -38,3 +38,23 @@
 - Results go to #bh-pipeline channel.
 - Keep output concise — Slack truncates long messages.
 - If output would be long, write to a .md file and mention the path.
+
+## CRON AND INFRASTRUCTURE RULES
+
+*Added after Session 44 — 9-hour zombie loop incident*
+
+run.sh MUST have these three safeguards before the cron is re-enabled. All three are mandatory, no exceptions:
+
+1. **flock lock file** — `flock -n /tmp/morphlex_run.lock` at the top. If locked, exit 0 silently. Prevents concurrent runs.
+
+2. **Marker file** — after next_task.sh succeeds, create `/tmp/morphlex_markers/done_$(md5sum next_task.sh | cut -d' ' -f1)`. Before running next_task.sh, check if this marker exists. If it does, exit 0 silently. Prevents re-running the same task. NEVER use rename/delete of git-tracked files as a completion mechanism — `git reset --hard` restores them.
+
+3. **Silent exit when no task** — if next_task.sh does not exist after git sync, exit 0 with no Slack message.
+
+### Additional rules
+
+- Always push directly to main. Never push to a branch unless explicitly told to. The cron only pulls main.
+- Every bot message must include the git HEAD hash in stdout so we can verify what code actually ran.
+- Check Start time vs current time in bot output. If the gap is more than 5 minutes, there is a process backlog. Stop and diagnose.
+- The pkl rebuild reads 2.4GB into memory. Never run more than one instance at a time on this 8GB VM. The flock prevents this but be aware of the constraint.
+- Claude Code cannot SSH into the VM or use gcloud. The only way to execute code on the VM is through next_task.sh via the cron. Plan accordingly.
