@@ -8,9 +8,13 @@ Zero false positives from wrong-language input.
 
 Test words: 10 Arabic words (water, fire, hand, eye, stone, heart, sun, moon, tree, blood)
 Languages: ar, tr, de, en, la, zh, ja, he, sa, grc, ine-pro (11 total)
+
+Output:
+- Full detailed results written to /mnt/pgdata/morphlex/arabic_anchor_test_full.md
+- Short summary printed to stdout
 """
 
-import os
+import io
 import sys
 from datetime import datetime
 
@@ -33,6 +37,9 @@ TEST_WORDS = [
 
 LANGUAGES = ['ar', 'tr', 'de', 'en', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
 
+# Full output file path
+FULL_OUTPUT_PATH = '/mnt/pgdata/morphlex/arabic_anchor_test_full.md'
+
 
 def seed_translations():
     """Ensure forward_translations.pkl exists with test data."""
@@ -41,20 +48,30 @@ def seed_translations():
 
 
 def run_test():
-    """Run the full Arabic anchor test."""
+    """Run the full Arabic anchor test with detailed output to file."""
     start_time = datetime.now()
-    print("=" * 70)
-    print("ARABIC ANCHOR PIPELINE TEST")
-    print("=" * 70)
-    print(f"Start time: {start_time.isoformat()}")
-    print(f"Test words: {len(TEST_WORDS)} Arabic words")
-    print(f"Languages:  {len(LANGUAGES)} languages")
-    print()
+
+    # Capture all output including warnings for the full report
+    full_output = io.StringIO()
+
+    def write_full(msg):
+        """Write to full output buffer."""
+        full_output.write(msg + "\n")
+
+    write_full("# Arabic Anchor Pipeline Test - Full Output")
+    write_full("")
+    write_full(f"**Start time:** {start_time.isoformat()}")
+    write_full(f"**Test words:** {len(TEST_WORDS)} Arabic words")
+    write_full(f"**Languages:** {len(LANGUAGES)} languages")
+    write_full("")
+    write_full("---")
+    write_full("")
 
     # Seed translations first
-    print("--- Seeding translations ---")
+    write_full("## Seeding Translations")
+    write_full("")
     seed_translations()
-    print()
+    write_full("")
 
     # Import orchestrator after seeding
     from pipeline.orchestrator import PipelineOrchestrator
@@ -68,14 +85,20 @@ def run_test():
     orchestrator = PipelineOrchestrator()
 
     # Track results
-    results_by_lang = {lang: {'count': 0, 'ok': 0, 'empty': 0, 'words_received': []} for lang in LANGUAGES}
+    results_by_lang = {lang: {'count': 0, 'ok': 0, 'empty': 0, 'words_received': [], 'all_results': []} for lang in LANGUAGES}
     all_results = []
 
-    print("--- Running analysis ---")
-    print()
+    write_full("## Detailed Analysis Results")
+    write_full("")
+    write_full("Each word analyzed with every language adapter:")
+    write_full("")
 
     for arabic_word, english_meaning in TEST_WORDS:
         word_trans = translations.get(arabic_word, {})
+        write_full(f"### Arabic: {arabic_word} ({english_meaning})")
+        write_full("")
+        write_full(f"Translations: {word_trans}")
+        write_full("")
 
         for lang in LANGUAGES:
             # Determine what word the adapter will receive
@@ -92,10 +115,11 @@ def run_test():
             except Exception as e:
                 results = []
                 count = 0
-                print(f"  ERROR: {lang} - {arabic_word}: {e}")
+                write_full(f"  **ERROR** {lang}: {e}")
 
             results_by_lang[lang]['count'] += count
             results_by_lang[lang]['words_received'].append(word_received)
+            results_by_lang[lang]['all_results'].extend(results or [])
 
             if count > 0:
                 results_by_lang[lang]['ok'] += 1
@@ -103,13 +127,27 @@ def run_test():
             else:
                 results_by_lang[lang]['empty'] += 1
 
-    print()
-    print("--- Results per language ---")
-    print()
-    print(f"{'Language':<10} {'Total':>8} {'OK':>6} {'Empty':>6}  {'Status':<10}  Sample Words Received")
-    print("-" * 90)
+            # Write detailed results for this word/lang combination
+            write_full(f"**{lang}**: received `{word_received}` → {count} results")
+            if results:
+                for r in results:
+                    lemma = r.get('lemma', '?')
+                    pos = r.get('pos', '?')
+                    root = r.get('root', '')
+                    morph = r.get('morphological_features', {})
+                    write_full(f"  - lemma={lemma}, pos={pos}, root={root}, features={morph}")
+            write_full("")
+
+        write_full("---")
+        write_full("")
+
+    write_full("## Per-Language Summary Table")
+    write_full("")
+    write_full("| Language | Total | OK | Empty | Status | Sample Words Received |")
+    write_full("|----------|------:|---:|------:|--------|----------------------|")
 
     all_ok = True
+    summary_lines = []
     for lang in LANGUAGES:
         stats = results_by_lang[lang]
         count = stats['count']
@@ -132,56 +170,49 @@ def run_test():
                 status = '[OK]'
             else:
                 status = '[EMPTY]'
-                # Empty might be OK if tools aren't installed - don't fail
 
         sample_words = ', '.join(str(w)[:15] for w in words)
-        print(f"{lang:<10} {count:>8} {ok:>6} {empty:>6}  {status:<10}  {sample_words}")
+        write_full(f"| {lang} | {count} | {ok} | {empty} | {status} | {sample_words} |")
+        summary_lines.append((lang, count, status))
 
-    print("-" * 90)
-    print(f"{'TOTAL':<10} {len(all_results):>8}")
-    print()
+    write_full("")
+    write_full(f"**TOTAL:** {len(all_results)} results")
+    write_full("")
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
 
-    print("=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    print(f"End time: {end_time.isoformat()}")
-    print(f"Duration: {duration:.2f} seconds")
-    print(f"Total results: {len(all_results)}")
-    print()
-
+    write_full("## Summary")
+    write_full("")
+    write_full(f"**End time:** {end_time.isoformat()}")
+    write_full(f"**Duration:** {duration:.2f} seconds")
+    write_full(f"**Total results:** {len(all_results)}")
+    write_full("")
     if all_ok:
-        print("STATUS: SUCCESS - All languages receiving correct input")
+        write_full("**STATUS: SUCCESS** - All languages receiving correct input")
     else:
-        print("STATUS: FAILED - Some languages received wrong-language input")
+        write_full("**STATUS: FAILED** - Some languages received wrong-language input")
 
-    print("=" * 70)
+    # Write full output to file
+    with open(FULL_OUTPUT_PATH, 'w', encoding='utf-8') as f:
+        f.write(full_output.getvalue())
 
-    # Write summary report
-    report_path = '/mnt/pgdata/morphlex/test_report.md'
-    with open(report_path, 'w') as f:
-        f.write("# Arabic Anchor Pipeline Test Report\n\n")
-        f.write(f"**Start:** {start_time.isoformat()}\n")
-        f.write(f"**End:** {end_time.isoformat()}\n")
-        f.write(f"**Duration:** {duration:.2f} seconds\n\n")
-        f.write(f"**Test words:** {len(TEST_WORDS)} Arabic words\n")
-        f.write(f"**Languages:** {len(LANGUAGES)}\n\n")
-        f.write("## Results by Language\n\n")
-        f.write("| Language | Count | OK | Empty | Status |\n")
-        f.write("|----------|------:|---:|------:|--------|\n")
-        for lang in LANGUAGES:
-            stats = results_by_lang[lang]
-            count = stats['count']
-            ok = stats['ok']
-            empty = stats['empty']
-            status = '[OK]' if count > 0 else '[EMPTY]'
-            f.write(f"| {lang} | {count} | {ok} | {empty} | {status} |\n")
-        f.write(f"\n**Total results:** {len(all_results)}\n")
-        f.write(f"\n**Overall status:** {'SUCCESS' if all_ok else 'FAILED'}\n")
-
-    print(f"Report written to: {report_path}")
+    # Print SHORT summary to stdout (for Slack)
+    print("=" * 50)
+    print("ARABIC ANCHOR TEST - SUMMARY")
+    print("=" * 50)
+    print(f"Start: {start_time.isoformat()}")
+    print(f"End:   {end_time.isoformat()}")
+    print(f"Duration: {duration:.2f} seconds")
+    print()
+    print("Per-language counts:")
+    for lang, count, status in summary_lines:
+        print(f"  {lang:<10} : {count:>4} results {status}")
+    print()
+    print(f"TOTAL: {len(all_results)} results from {len(TEST_WORDS)} words x {len(LANGUAGES)} languages")
+    print()
+    print(f"Full details: {FULL_OUTPUT_PATH}")
+    print("=" * 50)
 
     return all_ok
 

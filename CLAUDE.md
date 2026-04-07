@@ -22,6 +22,7 @@
 - All changes go directly to main branch. Do not create feature branches unless explicitly told to.
 - Always run `bash -n` on all shell scripts before committing.
 - `next_task.sh` must always start with `cd /mnt/pgdata/morphlex && source venv/bin/activate`.
+- **DO NOT suppress any library warnings — warnings must always be visible in output.**
 - Latin words from forward_translations.pkl have macrons — always strip diacritics before passing to Morpheus.
 - Use `git fetch origin && git reset --hard origin/main` instead of `git pull --ff-only`.
 
