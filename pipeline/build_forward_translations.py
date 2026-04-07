@@ -19,8 +19,22 @@ import json
 import os
 import pickle
 import random
+import re
 
 RAW_WIKTEXTRACT_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
+
+# Arabic diacritics (tashkeel) to strip from keys for consistent lookup
+# Range U+064B to U+065F (harakat) plus U+0670 (superscript alef)
+ARABIC_DIACRITICS = re.compile(r'[\u064B-\u065F\u0670]')
+
+
+def strip_arabic_diacritics(text: str) -> str:
+    """Remove Arabic tashkeel/diacritics for consistent key lookup.
+
+    Wiktextract may store Arabic with diacritics like مَاءٌ (with fatha, sukun, tanwin)
+    but lookups use plain Arabic like ماء. Stripping ensures keys match lookups.
+    """
+    return ARABIC_DIACRITICS.sub('', text)
 OUTPUT_PATH = "/mnt/pgdata/morphlex/data/forward_translations.pkl"
 
 # Target languages for Arabic anchor mode (all languages except Arabic itself)
@@ -145,6 +159,12 @@ def build_forward_translations():
 
             # Validate Arabic script
             if not _valid_script('ar', arabic_word):
+                continue
+
+            # Strip Arabic diacritics from the key for consistent lookup
+            # Wiktextract may store مَاءٌ but lookups use ماء
+            arabic_word = strip_arabic_diacritics(arabic_word).strip()
+            if not arabic_word:
                 continue
 
             entries_with_arabic += 1
