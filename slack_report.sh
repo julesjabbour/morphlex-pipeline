@@ -10,20 +10,24 @@ if [ ! -f "$CONFIG" ]; then
 fi
 WEBHOOK_URL=$(cat "$CONFIG")
 
-# Read message from stdin (handles any size output without "Argument list too long")
-MESSAGE=$(cat)
-
-# Save full untruncated output to reports directory
+# Save full untruncated output to reports directory (via temp file - never use bash variable for large data)
 REPORTS_DIR="/mnt/pgdata/morphlex/reports"
 mkdir -p "$REPORTS_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 REPORT_FILE="$REPORTS_DIR/task_output_${TIMESTAMP}.md"
-echo "$MESSAGE" > "$REPORT_FILE"
+
+# Use temp file to avoid storing large data in bash variable
+TMPFILE=$(mktemp /tmp/slack_input.XXXXXX)
+trap "rm -f '$TMPFILE'" EXIT
+
+# Read stdin to temp file (handles any size)
+cat > "$TMPFILE"
+cp "$TMPFILE" "$REPORT_FILE"
 echo "Full output saved to: $REPORT_FILE"
 
 # Post to Slack - split into chunks if over 3500 chars
-# Pass message via stdin to avoid "Argument list too long" for large outputs
-echo "$MESSAGE" | python3 -c "
+# Read from temp file to avoid "Argument list too long" for large outputs
+cat "$TMPFILE" | python3 -c "
 import json
 import urllib.request
 import urllib.error
