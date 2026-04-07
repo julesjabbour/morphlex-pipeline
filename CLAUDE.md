@@ -58,3 +58,7 @@ run.sh MUST have these three safeguards before the cron is re-enabled. All three
 - Check Start time vs current time in bot output. If the gap is more than 5 minutes, there is a process backlog. Stop and diagnose.
 - The pkl rebuild reads 2.4GB into memory. Never run more than one instance at a time on this 8GB VM. The flock prevents this but be aware of the constraint.
 - Claude Code cannot SSH into the VM or use gcloud. The only way to execute code on the VM is through next_task.sh via the cron. Plan accordingly.
+
+## OUTPUT RULES
+
+Never truncate Slack output. If output exceeds 3500 chars, split into multiple messages. Always write full output to /mnt/pgdata/morphlex/reports/ as timestamped .md file. Never suppress warnings or errors in any Python file or shell script — all errors must be visible in output.

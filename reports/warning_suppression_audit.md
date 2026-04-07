@@ -1,0 +1,161 @@
+# Warning and Error Suppression Audit
+
+**Date:** 2026-04-07  
+**Scope:** All Python files and shell scripts in `/mnt/pgdata/morphlex`
+
+---
+
+## Summary
+
+Found **15 instances** of warning/error suppression across **9 files**.
+
+---
+
+## Shell Script Suppressions
+
+### 1. run.sh:14
+```bash
+git fetch origin main 2>/dev/null && git reset --hard origin/main 2>/dev/null
+```
+**Suppresses:** stderr from git fetch and git reset commands  
+**Purpose:** Silences git output during cron execution
+
+### 2. next_task.sh:60
+```bash
+TASK_HASH=$(md5sum /mnt/pgdata/morphlex/next_task.sh 2>/dev/null | cut -d' ' -f1)
+```
+**Suppresses:** stderr from md5sum (e.g., file not found errors)  
+**Purpose:** Prevents error output when checking task hash
+
+---
+
+## Python File Suppressions
+
+### 3. diagnostic_test.py:11
+```python
+warnings.filterwarnings('ignore')
+```
+**Suppresses:** ALL Python warnings library-wide  
+**Purpose:** Silences library warnings during diagnostic run
+
+### 4. diagnostic_test.py:12
+```python
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+```
+**Suppresses:** TensorFlow C++ logging (all levels except errors)  
+**Purpose:** Silences TensorFlow startup messages
+
+### 5. diagnostic_test.py:15
+```python
+logging.disable(logging.CRITICAL)
+```
+**Suppresses:** ALL logging messages below CRITICAL level  
+**Purpose:** Silences all library logging output
+
+### 6. pipeline/build_forward_translations.py:291
+```python
+except:
+    pass
+```
+**Suppresses:** ALL exceptions (bare except with pass)  
+**Purpose:** Silently ignores JSON parsing errors during debug scan
+
+### 7. analyzers/german.py:173
+```python
+except Exception:
+    pass
+```
+**Suppresses:** All exceptions from DWDSmor analysis  
+**Purpose:** Silently falls through to CharSplit fallback on error
+
+### 8. analyzers/chinese.py:113
+```python
+except Exception:
+    continue
+```
+**Suppresses:** All exceptions during CEDICT line parsing  
+**Purpose:** Skips malformed CEDICT entries without logging
+
+### 9. analyzers/english.py:76
+```python
+except Exception:
+    continue
+```
+**Suppresses:** All exceptions during MorphoLex Excel file loading  
+**Purpose:** Skips problematic MorphoLex files without logging
+
+### 10. analyzers/english.py:111
+```python
+except Exception:
+    continue
+```
+**Suppresses:** All exceptions during MorphyNet TSV parsing  
+**Purpose:** Skips malformed MorphyNet lines without logging
+
+### 11. analyzers/japanese.py:108
+```python
+except Exception as e:
+    # Log error but don't crash - return empty results
+    import logging
+```
+**Note:** This one DOES log the error (see line 110+), so it's not fully suppressed
+
+### 12. pipeline/orchestrator.py:131
+```python
+except Exception as e:
+    logger.error(f"Error analyzing '{word_to_analyze}' ({language}): {e}")
+    return []
+```
+**Note:** This one DOES log the error, so it's not suppressed - it handles gracefully
+
+### 13. pipeline/orchestrator.py:150
+```python
+except Exception as e:
+    logger.error(f"Error in batch processing '{word}' ({language}): {e}")
+    continue
+```
+**Note:** This one DOES log the error, so it's not suppressed - it handles gracefully
+
+### 14. pipeline/orchestrator.py:208
+```python
+except Exception as e:
+    logger.error(f"Database insertion error: {e}")
+```
+**Note:** This one DOES log the error, so it's not suppressed - it handles gracefully
+
+### 15. pipeline/translator.py (multiple instances)
+Lines 63, 151, 186, 223 all have `except Exception as e:` with `logger.error()` calls.  
+**Note:** These all log errors properly, so they're not true suppressions.
+
+---
+
+## True Suppressions Requiring Action
+
+The following are **actual suppressions** that hide errors/warnings:
+
+| File | Line | Type | Severity |
+|------|------|------|----------|
+| run.sh | 14 | `2>/dev/null` | Low (git output) |
+| next_task.sh | 60 | `2>/dev/null` | Low (md5sum error) |
+| diagnostic_test.py | 11 | `warnings.filterwarnings('ignore')` | **HIGH** |
+| diagnostic_test.py | 12 | `TF_CPP_MIN_LOG_LEVEL=3` | Medium |
+| diagnostic_test.py | 15 | `logging.disable(logging.CRITICAL)` | **HIGH** |
+| build_forward_translations.py | 291 | bare `except: pass` | **HIGH** |
+| german.py | 173 | `except Exception: pass` | **HIGH** |
+| chinese.py | 113 | `except Exception: continue` | Medium |
+| english.py | 76 | `except Exception: continue` | Medium |
+| english.py | 111 | `except Exception: continue` | Medium |
+
+---
+
+## Recommendations
+
+1. **diagnostic_test.py:** Remove all warning/logging suppression (lines 11, 12, 15)
+2. **build_forward_translations.py:291:** Replace bare `except: pass` with specific exception handling and logging
+3. **german.py:173:** Log the exception before falling through to fallback
+4. **chinese.py, english.py:** Add logging for skipped entries to aid debugging
+5. **Shell scripts:** Consider logging git/md5sum errors to a debug file instead of /dev/null
+
+---
+
+*Audit generated by Claude Code - Session 2026-04-07*
