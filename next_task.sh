@@ -1,297 +1,164 @@
 #!/bin/bash
-# Task: Rebuild forward_translations.pkl + 1000-word batch test
-# Session: Rebuild pkl with full logging, then test 1000 Arabic words across all 11 languages
-# Zero error suppression - all exceptions must log visibly
+# Task: Diagnose why commit 3aafb44 ran but didn't post to Slack
+# Session: Fetch cron logs, report files, and test webhook
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 GIT_HEAD=$(git rev-parse HEAD)
 START_TIME=$(date -Iseconds)
 
-echo "=== PKL REBUILD + 1000-WORD BATCH TEST ==="
+echo "=== SLACK POST DIAGNOSTIC ==="
 echo "Start: $START_TIME"
 echo "Git HEAD: $GIT_HEAD"
 echo ""
 
 # ============================================================
-# TASK 1: REBUILD forward_translations.pkl WITH FULL LOGGING
+# PART 1: CRON LOG - LAST 100 LINES
 # ============================================================
 
 echo "============================================================"
-echo "TASK 1: REBUILD forward_translations.pkl"
+echo "PART 1: /tmp/morphlex_cron.log (last 100 lines)"
 echo "============================================================"
 echo ""
 
-# Record previous pkl stats
-PKL_PATH="/mnt/pgdata/morphlex/data/forward_translations.pkl"
-PREV_KEY_COUNT=18807  # Known previous count
-
-if [ -f "$PKL_PATH" ]; then
-    PREV_SIZE=$(stat -c%s "$PKL_PATH")
-    echo "Previous pkl file size: $PREV_SIZE bytes"
+if [ -f /tmp/morphlex_cron.log ]; then
+    tail -100 /tmp/morphlex_cron.log
 else
-    PREV_SIZE=0
-    echo "No previous pkl file exists"
-fi
-echo "Previous key count (known): $PREV_KEY_COUNT"
-echo ""
-
-echo "--- Running build_forward_translations.py with FULL logging ---"
-echo ""
-
-# Run the build script - all output visible, no suppression
-python3 /mnt/pgdata/morphlex/pipeline/build_forward_translations.py 2>&1
-BUILD_EXIT_CODE=$?
-
-echo ""
-echo "Build exit code: $BUILD_EXIT_CODE"
-echo ""
-
-# Analyze the rebuilt pkl
-if [ -f "$PKL_PATH" ]; then
-    NEW_SIZE=$(stat -c%s "$PKL_PATH")
-    echo "New pkl file size: $NEW_SIZE bytes ($(echo "scale=2; $NEW_SIZE/1024/1024" | bc) MB)"
-
-    python3 << 'PYEOF'
-import pickle
-import sys
-
-PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
-PREV_COUNT = 18807
-
-with open(PKL_PATH, 'rb') as f:
-    translations = pickle.load(f)
-
-new_count = len(translations)
-print(f"New key count: {new_count:,}")
-print(f"Previous key count: {PREV_COUNT:,}")
-
-diff = new_count - PREV_COUNT
-if diff > 0:
-    print(f"CHANGE: +{diff} entries gained")
-elif diff < 0:
-    print(f"CHANGE: {diff} entries lost")
-else:
-    print("CHANGE: No difference (same count)")
-
-# Language coverage stats
-print()
-print("Language coverage in rebuilt pkl:")
-lang_counts = {}
-for word, trans in translations.items():
-    for lang in trans.keys():
-        lang_counts[lang] = lang_counts.get(lang, 0) + 1
-
-for lang in sorted(lang_counts.keys()):
-    print(f"  {lang}: {lang_counts[lang]:,} entries")
-PYEOF
-else
-    echo "ERROR: PKL file was not created!"
+    echo "File not found: /tmp/morphlex_cron.log"
 fi
 
 echo ""
-echo "============================================================"
-echo "TASK 1 COMPLETE"
-echo "============================================================"
-echo ""
 
 # ============================================================
-# TASK 2: 1000-WORD BATCH TEST WITH ALL ADAPTERS
+# PART 2: DEBUG LOG
 # ============================================================
 
 echo "============================================================"
-echo "TASK 2: 1000-WORD BATCH TEST ACROSS ALL 11 LANGUAGES"
+echo "PART 2: /tmp/morphlex_debug.log (last 50 lines)"
 echo "============================================================"
 echo ""
 
-python3 << 'PYEOF'
-import pickle
-import csv
-import os
-import sys
-import traceback
-from datetime import datetime
-from collections import defaultdict
+if [ -f /tmp/morphlex_debug.log ]; then
+    tail -50 /tmp/morphlex_debug.log
+else
+    echo "File not found: /tmp/morphlex_debug.log"
+fi
 
-# Import orchestrator
-sys.path.insert(0, '/mnt/pgdata/morphlex')
-from pipeline.orchestrator import PipelineOrchestrator
+echo ""
 
-PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
-REPORTS_DIR = '/mnt/pgdata/morphlex/reports'
-CSV_PATH = os.path.join(REPORTS_DIR, 'batch_1000_test.csv')
-ERROR_PATH = os.path.join(REPORTS_DIR, 'batch_1000_errors.md')
+# ============================================================
+# PART 3: REPORT FILES FROM TODAY
+# ============================================================
 
-os.makedirs(REPORTS_DIR, exist_ok=True)
+echo "============================================================"
+echo "PART 3: Report files from /mnt/pgdata/morphlex/reports/"
+echo "============================================================"
+echo ""
 
-# Load pkl and get first 1000 keys
-print("Loading forward_translations.pkl...")
-with open(PKL_PATH, 'rb') as f:
-    translations = pickle.load(f)
+REPORTS_DIR="/mnt/pgdata/morphlex/reports"
 
-arabic_keys = list(translations.keys())[:1000]
-print(f"Testing first {len(arabic_keys)} Arabic keys across 11 languages")
-print()
+echo "Files in reports dir (sorted by date):"
+ls -lt "$REPORTS_DIR" 2>/dev/null || echo "  (directory not found or empty)"
+echo ""
 
-# Languages to test
-LANGUAGES = ['ar', 'en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
+# Check for batch_1000_test.csv
+echo "--- batch_1000_test.csv (first 50 lines if exists) ---"
+if [ -f "$REPORTS_DIR/batch_1000_test.csv" ]; then
+    echo "File size: $(stat -c%s "$REPORTS_DIR/batch_1000_test.csv") bytes"
+    echo "Modified: $(stat -c%y "$REPORTS_DIR/batch_1000_test.csv")"
+    echo ""
+    head -50 "$REPORTS_DIR/batch_1000_test.csv"
+    echo ""
+    echo "(showing first 50 lines only)"
+else
+    echo "File not found: batch_1000_test.csv"
+fi
 
-# Initialize orchestrator
-print("Initializing orchestrator...")
-orchestrator = PipelineOrchestrator()
+echo ""
 
-# Track results and errors
-results = []
-errors = []
-error_counts = defaultdict(int)
-success_count = 0
-fail_count = 0
-skipped_count = 0
+# Check for batch_1000_errors.md
+echo "--- batch_1000_errors.md (full contents if exists) ---"
+if [ -f "$REPORTS_DIR/batch_1000_errors.md" ]; then
+    echo "File size: $(stat -c%s "$REPORTS_DIR/batch_1000_errors.md") bytes"
+    echo "Modified: $(stat -c%y "$REPORTS_DIR/batch_1000_errors.md")"
+    echo ""
+    cat "$REPORTS_DIR/batch_1000_errors.md"
+else
+    echo "File not found: batch_1000_errors.md"
+fi
 
-print("Running batch test...")
-print()
+echo ""
 
-for i, arabic_word in enumerate(arabic_keys):
-    if (i + 1) % 100 == 0:
-        print(f"  Processed {i + 1}/1000 words...")
+# ============================================================
+# PART 4: WEBHOOK URL CHECK
+# ============================================================
 
-    word_succeeded = False
+echo "============================================================"
+echo "PART 4: Webhook URL validation"
+echo "============================================================"
+echo ""
 
-    for lang in LANGUAGES:
-        try:
-            # For Arabic, call directly. For others, orchestrator handles translation lookup
-            analysis_results = orchestrator.analyze(arabic_word, lang)
+WEBHOOK_FILE="/mnt/pgdata/morphlex/.webhook_url"
+if [ -f "$WEBHOOK_FILE" ]; then
+    URL=$(cat "$WEBHOOK_FILE")
+    echo "Webhook file exists: YES"
+    echo "URL length: ${#URL} characters"
+    echo "URL starts with https://: $(if [[ "$URL" == https://* ]]; then echo YES; else echo NO; fi)"
+    # Show first 30 chars only (safe portion)
+    echo "URL prefix: ${URL:0:30}..."
 
-            if analysis_results:
-                word_succeeded = True
-                for r in analysis_results:
-                    results.append({
-                        'arabic_key': arabic_word,
-                        'language': lang,
-                        'word_native': r.get('word_native', ''),
-                        'lemma': r.get('lemma', ''),
-                        'root': r.get('root', ''),
-                        'pos': r.get('pos', ''),
-                        'source_tool': r.get('source_tool', ''),
-                        'status': 'OK'
-                    })
-            else:
-                # No results - could be no translation available or adapter returned empty
-                skipped_count += 1
+    # Test the webhook with a simple ping
+    echo ""
+    echo "Testing webhook with curl..."
+    RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" \
+        -d '{"text":"🔍 Webhook test from diagnostic task"}' \
+        "$URL" 2>&1)
+    echo "HTTP response code: $RESPONSE"
 
-        except Exception as e:
-            error_type = type(e).__name__
-            error_msg = str(e)
-            error_counts[f"{error_type}: {error_msg[:100]}"] += 1
+    if [ "$RESPONSE" = "200" ]; then
+        echo "Webhook test: SUCCESS"
+    else
+        echo "Webhook test: FAILED"
+    fi
+else
+    echo "Webhook file NOT FOUND at $WEBHOOK_FILE"
+    echo "This is likely the root cause - no webhook URL configured!"
+fi
 
-            errors.append({
-                'arabic_key': arabic_word,
-                'language': lang,
-                'error_type': error_type,
-                'error_message': error_msg,
-                'traceback': traceback.format_exc()
-            })
-            fail_count += 1
+echo ""
 
-    if word_succeeded:
-        success_count += 1
-    else:
-        fail_count += 1
+# ============================================================
+# PART 5: MARKER FILE STATUS
+# ============================================================
 
-print()
-print("=" * 60)
-print("BATCH TEST RESULTS SUMMARY")
-print("=" * 60)
-print()
-print(f"Total Arabic words tested: {len(arabic_keys)}")
-print(f"Words with at least one successful analysis: {success_count}")
-print(f"Words with zero results across all languages: {fail_count - len(errors)}")
-print(f"Total analysis results: {len(results)}")
-print(f"Total errors encountered: {len(errors)}")
-print(f"Skipped (no translation available): {skipped_count}")
-print()
+echo "============================================================"
+echo "PART 5: Marker file status"
+echo "============================================================"
+echo ""
 
-# Results by language
-print("Results per language:")
-lang_result_counts = defaultdict(int)
-for r in results:
-    lang_result_counts[r['language']] += 1
+echo "Marker directory contents:"
+ls -la /tmp/morphlex_markers/ 2>/dev/null || echo "  (directory not found)"
+echo ""
 
-for lang in LANGUAGES:
-    count = lang_result_counts[lang]
-    status = "[OK]" if count > 0 else "[EMPTY]"
-    print(f"  {lang}: {count} results {status}")
-
-print()
-
-# Error summary
-if error_counts:
-    print("ERROR TYPES AND FREQUENCIES:")
-    for err, count in sorted(error_counts.items(), key=lambda x: -x[1]):
-        print(f"  {count}x: {err}")
-else:
-    print("No errors encountered!")
-
-print()
-
-# Write CSV results
-print(f"Writing results to {CSV_PATH}...")
-with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
-    if results:
-        writer = csv.DictWriter(f, fieldnames=['arabic_key', 'language', 'word_native', 'lemma', 'root', 'pos', 'source_tool', 'status'])
-        writer.writeheader()
-        writer.writerows(results)
-        print(f"  Wrote {len(results)} rows to CSV")
-    else:
-        f.write("No results\n")
-        print("  No results to write")
-
-# Write error log
-print(f"Writing errors to {ERROR_PATH}...")
-with open(ERROR_PATH, 'w', encoding='utf-8') as f:
-    f.write("# Batch 1000 Test - Error Log\n\n")
-    f.write(f"**Date:** {datetime.now().isoformat()}\n")
-    f.write(f"**Total Errors:** {len(errors)}\n\n")
-
-    if error_counts:
-        f.write("## Error Summary by Type\n\n")
-        f.write("| Error Type | Count |\n")
-        f.write("|------------|-------|\n")
-        for err, count in sorted(error_counts.items(), key=lambda x: -x[1]):
-            f.write(f"| {err[:80]} | {count} |\n")
-        f.write("\n")
-
-    if errors:
-        f.write("## Detailed Errors\n\n")
-        for i, e in enumerate(errors[:50], 1):  # First 50 errors only
-            f.write(f"### Error {i}\n")
-            f.write(f"- **Arabic Key:** {e['arabic_key']}\n")
-            f.write(f"- **Language:** {e['language']}\n")
-            f.write(f"- **Type:** {e['error_type']}\n")
-            f.write(f"- **Message:** {e['error_message']}\n")
-            f.write(f"```\n{e['traceback']}\n```\n\n")
-
-        if len(errors) > 50:
-            f.write(f"\n... and {len(errors) - 50} more errors (see full log)\n")
-    else:
-        f.write("## No Errors\n\nAll 1000 words processed without exceptions.\n")
-
-print(f"  Wrote error log")
-print()
-print("BATCH TEST COMPLETE")
-PYEOF
+# Check for marker from commit 3aafb44
+TASK_3AAFB44_HASH="77197b2ae2ae3cb59724d8f2d7a9e3bd"  # Approximate hash
+echo "Known marker hashes:"
+for f in /tmp/morphlex_markers/done_*; do
+    if [ -f "$f" ]; then
+        basename "$f"
+        stat -c "  Created: %y" "$f"
+    fi
+done
 
 echo ""
 
 END_TIME=$(date -Iseconds)
 echo "============================================================"
-echo "ALL TASKS COMPLETE"
+echo "DIAGNOSTIC COMPLETE"
 echo "============================================================"
 echo ""
 echo "Start: $START_TIME"
 echo "End:   $END_TIME"
 echo "Git HEAD: $GIT_HEAD"
 echo ""
-echo "Output files:"
-echo "  - /mnt/pgdata/morphlex/reports/batch_1000_test.csv"
-echo "  - /mnt/pgdata/morphlex/reports/batch_1000_errors.md"
+echo "If this message appears in Slack, the slack_report.sh fix is working!"
