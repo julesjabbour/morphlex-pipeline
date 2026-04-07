@@ -10,22 +10,9 @@ Test words: 10 Arabic words (water, fire, hand, eye, stone, heart, sun, moon, tr
 Languages: ar, tr, de, en, la, zh, ja, he, sa, grc, ine-pro (11 total)
 """
 
-import logging
 import os
 import sys
 from datetime import datetime
-
-# Suppress library warnings BEFORE imports
-logging.getLogger('zeyrek').setLevel(logging.ERROR)
-logging.getLogger('zeyrek.rulebasedanalyzer').setLevel(logging.ERROR)
-logging.getLogger('fugashi').setLevel(logging.ERROR)
-logging.getLogger('camel_tools').setLevel(logging.ERROR)
-logging.getLogger('spacy').setLevel(logging.ERROR)
-logging.getLogger('urllib3').setLevel(logging.ERROR)
-
-# Also suppress warnings module
-import warnings
-warnings.filterwarnings('ignore')
 
 # Set up path - all code lives at /mnt/pgdata/morphlex
 sys.path.insert(0, '/mnt/pgdata/morphlex')

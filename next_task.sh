@@ -12,9 +12,6 @@ cd /mnt/pgdata/morphlex
 # Activate venv
 source /mnt/pgdata/morphlex/venv/bin/activate
 
-# Suppress warnings at bash level
-export PYTHONWARNINGS="ignore"
-
 echo "=== ARABIC ANCHOR PIPELINE TEST ==="
 echo "Start: $(date -Iseconds)"
 echo ""
