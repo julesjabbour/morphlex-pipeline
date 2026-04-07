@@ -3,6 +3,10 @@ cd /mnt/pgdata/morphlex
 
 LOCKFILE="/tmp/morphlex_run.lock"
 LOGFILE="/tmp/pipeline.log"
+MARKER_DIR="/tmp/morphlex_markers"
+
+# Create marker directory if needed
+mkdir -p "$MARKER_DIR"
 
 # Lock: prevent concurrent runs. Exit silently if another instance is running.
 exec 200>"$LOCKFILE"
@@ -12,8 +16,25 @@ fi
 
 # Force-sync with GitHub (handles dirty repo)
 GIT_BEFORE=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-git fetch origin 2>&1
-FETCH_EXIT=$?
+
+# Fetch with retry (up to 4 attempts with exponential backoff)
+FETCH_EXIT=1
+for attempt in 1 2 3 4; do
+  git fetch origin main 2>&1
+  FETCH_EXIT=$?
+  if [ $FETCH_EXIT -eq 0 ]; then
+    break
+  fi
+  DELAY=$((2 ** attempt))
+  echo "[$(date)] Git fetch attempt $attempt failed, retrying in ${DELAY}s..." >> "$LOGFILE"
+  sleep $DELAY
+done
+
+if [ $FETCH_EXIT -ne 0 ]; then
+  echo "[$(date)] Git fetch failed after 4 attempts" >> "$LOGFILE"
+  exit 1
+fi
+
 git reset --hard origin/main 2>&1
 RESET_EXIT=$?
 GIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -25,23 +46,30 @@ if [ ! -f next_task.sh ]; then
   exit 0
 fi
 
-echo "[$(date)] Running next_task.sh" >> "$LOGFILE"
+# Create marker based on next_task.sh content hash (survives git reset)
+TASK_HASH=$(md5sum next_task.sh | cut -d' ' -f1)
+MARKER_FILE="$MARKER_DIR/done_$TASK_HASH"
+
+# Check if this exact task was already completed
+if [ -f "$MARKER_FILE" ]; then
+  echo "[$(date)] Task already done (marker exists for hash $TASK_HASH)" >> "$LOGFILE"
+  exit 0
+fi
+
+echo "[$(date)] Running next_task.sh (hash=$TASK_HASH)" >> "$LOGFILE"
 source /mnt/pgdata/morphlex/venv/bin/activate
 TASK_OUTPUT=$(bash next_task.sh 2>&1)
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then
   STATUS="SUCCESS"
-  # Rename to .done so it won't re-run
-  mv next_task.sh next_task.sh.done
-  git add next_task.sh.done 2>/dev/null
-  git rm --cached next_task.sh 2>/dev/null
-  git commit -m "Mark task done: $(date -Iseconds)" 2>/dev/null
-  git push origin main 2>/dev/null
+  # Write marker file to prevent re-running (survives git reset)
+  echo "$(date -Iseconds)" > "$MARKER_FILE"
+  echo "[$(date)] Created marker file: $MARKER_FILE" >> "$LOGFILE"
 else
   STATUS="FAILED (exit code $EXIT_CODE)"
-  # On failure, also rename to prevent infinite loop
-  mv next_task.sh "next_task.sh.failed.$(date +%s)"
+  # On failure, also write marker to prevent infinite loop (different prefix)
+  echo "$(date -Iseconds) - exit $EXIT_CODE" > "$MARKER_DIR/failed_$TASK_HASH"
 fi
 
 bash /mnt/pgdata/morphlex/slack_report.sh "*Task $STATUS*

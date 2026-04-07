@@ -4,6 +4,8 @@
 #
 # Usage: bash next_task.sh
 # Working directory: /mnt/pgdata/morphlex
+#
+# NOTE: git fetch/reset is handled by run.sh - do not duplicate here
 
 set -e
 
@@ -11,11 +13,12 @@ cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 echo "=== REBUILD PKL WITH DIACRITICS FIX ==="
 echo "Start: $(date -Iseconds)"
+echo "Git HEAD: $(git rev-parse --short HEAD)"
 echo ""
 
-# Step 1: Pull latest from main to get the fix
-echo "Pulling latest from main..."
-git fetch origin && git reset --hard origin/main
+# Step 1: Show current pkl stats
+echo "Current pkl before rebuild:"
+ls -la data/forward_translations.pkl 2>/dev/null || echo "  (does not exist)"
 echo ""
 
 # Step 2: Rebuild the pkl using the fixed build script
@@ -103,28 +106,20 @@ print("10-WORD ARABIC ANCHOR TEST")
 print("=" * 60)
 print()
 
-# Test each word
+# Test each word - check if in pkl
 print("Test word translations from pkl:")
-total_results = 0
-per_lang_results = {lang: 0 for lang in LANGUAGES}
+words_found = 0
+words_missing = 0
 
 for ar, en in TEST_WORDS:
     trans = translations.get(ar, {})
     if trans:
+        words_found += 1
         lang_count = len(trans)
         en_trans = trans.get('en', 'N/A')
         print(f"  {ar} ({en}): FOUND - {lang_count} languages, en='{en_trans}'")
-
-        # Count Arabic result (the word was found)
-        per_lang_results['ar'] += 15  # Approximate morphological results for Arabic
-        total_results += 15
-
-        # Count other language results
-        for lang in TARGET_LANGUAGES:
-            if lang in trans:
-                per_lang_results[lang] += 14  # Approximate morphological results
-                total_results += 14
     else:
+        words_missing += 1
         print(f"  {ar} ({en}): MISSING - 0 languages")
 
 print()
@@ -133,17 +128,21 @@ print("SUMMARY")
 print("=" * 60)
 print()
 
-print("Per-language results:")
-for lang in LANGUAGES:
-    count = per_lang_results[lang]
-    status = "[OK]" if count > 0 else "[EMPTY]"
-    print(f"  {lang:10} : {count:4} results {status}")
-
-print()
-print(f"TOTAL: {total_results} results from 10 words x 11 languages")
+print(f"Test words found in pkl: {words_found}/10")
+print(f"Test words missing from pkl: {words_missing}/10")
 print()
 print(f"PKL file size: {file_size:,} bytes ({file_size/1024/1024:.2f} MB)")
 print(f"Total Arabic words in pkl: {len(translations):,}")
+print(f"Keys with diacritics: {keys_with_diacritics:,}")
+
+# If all 10 words are missing, show what keys look like
+if words_missing == 10:
+    print()
+    print("=" * 60)
+    print("DEBUG: All test words missing - showing 10 random keys")
+    print("=" * 60)
+    for k in random.sample(keys_list, min(10, len(keys_list))):
+        print(f"  '{k}'")
 PYEOF
 
 echo ""
