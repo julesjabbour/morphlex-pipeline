@@ -1,12 +1,10 @@
 #!/bin/bash
-# Rebuild forward_translations.pkl from full Wiktextract data (INVERTED LOGIC)
+# Run updated build_forward_translations.py with INVERTED Arabic->X logic
 #
-# The Wiktextract dump is from English Wiktionary - entries are English words with translations.
-# This script inverts the mapping:
+# The script processes English Wiktionary entries:
 # 1. Finds English entries that have an Arabic translation
 # 2. Uses the Arabic word as the KEY
 # 3. Collects all other translations (en, tr, de, la, zh, ja, he, sa, grc, ine-pro) as VALUES
-# Builds the full Arabic-to-X forward_translations.pkl
 #
 # Usage: bash next_task.sh
 # Working directory: /mnt/pgdata/morphlex
@@ -15,8 +13,13 @@ set -e
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== REBUILD FORWARD TRANSLATIONS FROM WIKTEXTRACT ==="
+echo "=== REBUILD FORWARD TRANSLATIONS (INVERTED ARABIC->X) ==="
 echo "Start: $(date -Iseconds)"
+echo ""
+
+# Fetch latest code to ensure we have the inverted script
+echo "Fetching latest code from GitHub..."
+git fetch origin && git reset --hard origin/main
 echo ""
 
 # Check that raw data exists
@@ -32,17 +35,23 @@ if [ -f "data/forward_translations.pkl" ]; then
 else
     echo "No existing forward_translations.pkl"
 fi
+echo ""
 
-# Run the build script
+# Run the build script - it outputs stats and runs debug sampling if 0 results
 python3 pipeline/build_forward_translations.py
 
-# Show new file size
+# Show final file size summary
 if [ -f "data/forward_translations.pkl" ]; then
     AFTER_SIZE=$(stat -c%s "data/forward_translations.pkl")
-    AFTER_SIZE_MB=$(echo "scale=2; $AFTER_SIZE / 1048576" | bc)
-    echo ""
-    echo "=== REBUILD COMPLETE ==="
-    echo "New forward_translations.pkl: ${AFTER_SIZE_MB}MB ($AFTER_SIZE bytes)"
+    if [ "$AFTER_SIZE" -gt 1048576 ]; then
+        AFTER_SIZE_MB=$(echo "scale=2; $AFTER_SIZE / 1048576" | bc)
+        echo ""
+        echo "=== FINAL: forward_translations.pkl: ${AFTER_SIZE_MB}MB ($AFTER_SIZE bytes) ==="
+    else
+        AFTER_SIZE_KB=$(echo "scale=2; $AFTER_SIZE / 1024" | bc)
+        echo ""
+        echo "=== FINAL: forward_translations.pkl: ${AFTER_SIZE_KB}KB ($AFTER_SIZE bytes) ==="
+    fi
 fi
 
 echo ""
