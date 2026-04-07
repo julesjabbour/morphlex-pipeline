@@ -208,6 +208,57 @@ def _get_derivation_type(prefixes: list, suffixes: list, morphynet_type: str = N
     return None
 
 
+def _classify_morph_type(root: str, prefixes: list, suffixes: list, components: list) -> str:
+    """
+    Classify morphological type based on structure.
+
+    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, OTHER, UNKNOWN
+    """
+    has_root = bool(root)
+    has_affixes = bool(prefixes) or bool(suffixes)
+    # Compounds have multiple root-level components (more than just root + affixes)
+    is_compound = len(components) > 3 if components else False
+
+    if is_compound and has_affixes:
+        return 'COMPOUND_DERIVATION'
+    elif is_compound:
+        return 'COMPOUND'
+    elif has_affixes and has_root:
+        return 'DERIVATION'
+    elif has_root and not has_affixes:
+        return 'ROOT'
+    elif has_root:
+        return 'OTHER'
+    else:
+        return 'UNKNOWN'
+
+
+def _fix_pos_tag(word: str, pos: str, lemma: str) -> str:
+    """
+    Fix common spaCy POS tagging errors.
+
+    Problem 5: spaCy incorrectly tags common nouns as PROPN.
+    """
+    # List of words commonly mistagged as PROPN
+    common_nouns = {
+        'dictionary', 'book', 'water', 'fire', 'hand', 'eye', 'stone',
+        'heart', 'sun', 'moon', 'tree', 'blood', 'house', 'word', 'name',
+        'day', 'night', 'year', 'time', 'man', 'woman', 'child', 'world'
+    }
+
+    word_lower = word.lower()
+
+    # If tagged as PROPN but is a common word, fix to NOUN
+    if pos == 'PROPN' and word_lower in common_nouns:
+        return 'NOUN'
+
+    # If all lowercase and tagged as PROPN, likely wrong
+    if pos == 'PROPN' and word == word_lower and not word[0].isupper():
+        return 'NOUN'
+
+    return pos
+
+
 def analyze_english(word: str) -> list[dict]:
     """
     Analyze an English word and return morphological analyses.
@@ -233,6 +284,8 @@ def analyze_english(word: str) -> list[dict]:
             token = doc[0]
             lemma = token.lemma_
             pos = token.pos_
+            # Fix common POS tagging errors (Problem 5)
+            pos = _fix_pos_tag(word, pos, lemma)
 
     # Load MorphoLex and MorphyNet data
     morpholex_data = _load_morpholex_data()
@@ -255,6 +308,14 @@ def analyze_english(word: str) -> list[dict]:
             morphynet_deriv
         )
 
+        # Classify morphological type (Problem 2)
+        morph_type = _classify_morph_type(
+            parsed['root'],
+            parsed['prefixes'],
+            parsed['suffixes'],
+            parsed['components']
+        )
+
         # Build morphological features
         morphological_features = {}
         if parsed['prefixes']:
@@ -270,21 +331,29 @@ def analyze_english(word: str) -> list[dict]:
             'lemma': lemma,
             'root': parsed['root'],
             'pos': pos,
+            'morph_type': morph_type,
             'derivation_type': derivation_type,
+            'derived_from_root': parsed['root'],
+            'derivation_mode': derivation_type,
+            'compound_components': parsed['components'] if len(parsed['components']) > 1 else None,
             'morphological_features': morphological_features,
             'confidence': 1.0,
             'source_tool': 'morpholex+morphynet+spacy'
         }
         results.append(result)
     else:
-        # Fallback: spaCy only
+        # Fallback: spaCy only - use lemma as root approximation
         result = {
             'language_code': 'en',
             'word_native': word,
             'lemma': lemma,
-            'root': None,
+            'root': lemma,  # Use lemma as root when MorphoLex unavailable
             'pos': pos,
+            'morph_type': 'UNKNOWN',
             'derivation_type': None,
+            'derived_from_root': None,
+            'derivation_mode': None,
+            'compound_components': None,
             'morphological_features': {},
             'confidence': 0.5,
             'source_tool': 'spacy'

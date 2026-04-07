@@ -233,6 +233,57 @@ def _query_latmor(word: str) -> list[dict]:
     return results
 
 
+def _extract_latin_root(lemma: str, pos: str) -> str:
+    """
+    Extract Latin root from lemma.
+
+    For verbs, extract the verb stem.
+    For nouns/adjectives, return the base form.
+    """
+    if not lemma:
+        return ''
+
+    # For verbs ending in -are, -ere, -ire, extract stem
+    if pos == 'verb':
+        for ending in ['are', 'ere', 'ire', 'ari', 'eri', 'iri']:
+            if lemma.endswith(ending):
+                return lemma[:-len(ending)]
+
+    # For nouns/adjectives, strip common endings
+    for ending in ['us', 'um', 'a', 'ae', 'is', 'es', 'os']:
+        if lemma.endswith(ending) and len(lemma) > len(ending) + 1:
+            return lemma[:-len(ending)]
+
+    return lemma
+
+
+def _classify_latin_morph_type(lemma: str, pos: str) -> str:
+    """
+    Classify Latin morphological type.
+
+    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, OTHER, UNKNOWN
+    """
+    if not lemma:
+        return 'UNKNOWN'
+
+    lemma_lower = lemma.lower()
+
+    # Common Latin derivational suffixes
+    deriv_suffixes = ['tio', 'sio', 'tas', 'tudo', 'tor', 'sor', 'tura', 'sura', 'men', 'mentum']
+    # Common Latin derivational prefixes
+    deriv_prefixes = ['in', 'ex', 'de', 'con', 'dis', 'per', 'prae', 'pro', 're', 'sub', 'trans']
+
+    has_deriv_suffix = any(lemma_lower.endswith(s) for s in deriv_suffixes)
+    has_deriv_prefix = any(lemma_lower.startswith(p) for p in deriv_prefixes)
+
+    if has_deriv_suffix or has_deriv_prefix:
+        return 'DERIVATION'
+    elif lemma:
+        return 'ROOT'
+    else:
+        return 'UNKNOWN'
+
+
 def analyze_latin(word: str) -> list[dict]:
     """
     Analyze a Latin word and return morphological analyses.
@@ -254,11 +305,21 @@ def analyze_latin(word: str) -> list[dict]:
 
     # Convert Morpheus results
     for m in morpheus_results:
+        lemma = m['lemma']
+        pos = m['pos']
+        root = _extract_latin_root(lemma, pos)
+        morph_type = _classify_latin_morph_type(lemma, pos)
+
         result = {
             'language_code': 'la',
             'word_native': word,
-            'lemma': m['lemma'],
-            'pos': m['pos'],
+            'lemma': lemma,
+            'root': root,
+            'pos': pos,
+            'morph_type': morph_type,
+            'derived_from_root': root if morph_type == 'DERIVATION' else None,
+            'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
+            'compound_components': None,
             'morphological_features': m['features'],
             'source_tool': 'morpheus'
         }
@@ -266,11 +327,21 @@ def analyze_latin(word: str) -> list[dict]:
 
     # Convert LatMor results
     for l in latmor_results:
+        lemma = l['lemma']
+        pos = l['pos']
+        root = _extract_latin_root(lemma, pos)
+        morph_type = _classify_latin_morph_type(lemma, pos)
+
         result = {
             'language_code': 'la',
             'word_native': word,
-            'lemma': l['lemma'],
-            'pos': l['pos'],
+            'lemma': lemma,
+            'root': root,
+            'pos': pos,
+            'morph_type': morph_type,
+            'derived_from_root': root if morph_type == 'DERIVATION' else None,
+            'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
+            'compound_components': None,
             'morphological_features': l['features'],
             'source_tool': 'latmor'
         }

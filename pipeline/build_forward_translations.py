@@ -20,6 +20,9 @@ import os
 import pickle
 import random
 import re
+import sys
+from datetime import datetime
+from io import StringIO
 
 RAW_WIKTEXTRACT_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
 
@@ -98,7 +101,22 @@ def _extract_translations_from_entry(entry: dict) -> dict:
     return result
 
 
-def build_forward_translations():
+class TeeOutput:
+    """Capture stdout to both console and a StringIO buffer."""
+    def __init__(self, buffer):
+        self.buffer = buffer
+        self.stdout = sys.stdout
+
+    def write(self, text):
+        self.buffer.write(text)
+        self.stdout.write(text)
+
+    def flush(self):
+        self.buffer.flush()
+        self.stdout.flush()
+
+
+def build_forward_translations(log_path=None):
     """
     Stream raw Wiktextract dump and build forward translations index.
 
@@ -107,7 +125,34 @@ def build_forward_translations():
     - Find entries that have an Arabic translation
     - Use the Arabic word as KEY
     - Collect all other translations as VALUES (including the English word itself)
+
+    Args:
+        log_path: Optional path to save full build log (for pkl_rebuild_log.md)
     """
+    # Set up logging to capture all output
+    log_buffer = StringIO()
+    if log_path:
+        old_stdout = sys.stdout
+        sys.stdout = TeeOutput(log_buffer)
+
+    try:
+        return _build_forward_translations_impl(log_buffer, log_path)
+    finally:
+        if log_path:
+            sys.stdout = old_stdout
+            # Save log to file
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"# PKL Rebuild Log\n\n")
+                f.write(f"Generated: {datetime.now().isoformat()}\n\n")
+                f.write("```\n")
+                f.write(log_buffer.getvalue())
+                f.write("\n```\n")
+            print(f"Full build log saved to: {log_path}")
+
+
+def _build_forward_translations_impl(log_buffer, log_path):
+    """Implementation of build_forward_translations with logging."""
     if not os.path.exists(RAW_WIKTEXTRACT_PATH):
         print(f"ERROR: Raw file not found: {RAW_WIKTEXTRACT_PATH}")
         return
@@ -308,4 +353,8 @@ def _sample_dump_structure():
 
 
 if __name__ == '__main__':
-    build_forward_translations()
+    # Default log path for pkl rebuild
+    log_path = '/mnt/pgdata/morphlex/reports/pkl_rebuild_log.md'
+    if len(sys.argv) > 1:
+        log_path = sys.argv[1]
+    build_forward_translations(log_path=log_path)

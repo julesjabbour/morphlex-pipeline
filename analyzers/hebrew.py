@@ -33,6 +33,40 @@ def _normalize_hebrew(word: str) -> str:
     return normalized.strip()
 
 
+def _extract_hebrew_root(word: str, etymology_links: list) -> str:
+    """
+    Extract Hebrew root from etymology data if available.
+
+    Hebrew uses a triconsonantal root system similar to Arabic.
+    """
+    # Look for root info in etymology
+    for link in etymology_links:
+        if link.get('type') == 'root':
+            return link.get('source_word', '')
+
+    # Fallback: use normalized word as root approximation
+    return _normalize_hebrew(word)
+
+
+def _classify_hebrew_morph_type(word: str, etymology_links: list) -> str:
+    """
+    Classify Hebrew morphological type.
+
+    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, OTHER, UNKNOWN
+    """
+    has_root_etym = any(l.get('type') == 'root' for l in etymology_links)
+    has_derivation_etym = any(l.get('type') in ('der', 'inh') for l in etymology_links)
+
+    if has_root_etym and has_derivation_etym:
+        return 'DERIVATION'
+    elif has_root_etym:
+        return 'ROOT'
+    elif has_derivation_etym:
+        return 'DERIVATION'
+    else:
+        return 'UNKNOWN'
+
+
 def analyze_hebrew(word: str) -> list[dict]:
     """
     Analyze a Hebrew word and return morphological analyses.
@@ -74,7 +108,7 @@ def analyze_hebrew(word: str) -> list[dict]:
         for etym in match.get('etymology', []):
             etym_name = etym.get('name', '')
             etym_args = etym.get('args', {})
-            if etym_name in ('inh', 'bor', 'der', 'cog', 'etymon'):
+            if etym_name in ('inh', 'bor', 'der', 'cog', 'etymon', 'root'):
                 # Extract source language and word from etymology template
                 source_lang = etym_args.get('2', '')
                 source_word = etym_args.get('3', '')
@@ -85,12 +119,21 @@ def analyze_hebrew(word: str) -> list[dict]:
                         'source_word': source_word
                     })
 
+        # Extract root and classify morph type
+        root = _extract_hebrew_root(word, etymology_links)
+        morph_type = _classify_hebrew_morph_type(word, etymology_links)
+
         result = {
             'language_code': 'he',
             'word_native': word,
             'word_translit': None,  # Could add transliteration if available
             'lemma': word,
+            'root': root,
             'pos': match.get('pos', ''),
+            'morph_type': morph_type,
+            'derived_from_root': root if morph_type == 'DERIVATION' else None,
+            'derivation_mode': None,
+            'compound_components': None,
             'morphological_features': {
                 'english_gloss': match.get('english_word', ''),
                 'definitions': match.get('definitions', [])[:3],  # First 3 definitions

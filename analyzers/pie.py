@@ -28,6 +28,47 @@ def _load_etymology_data() -> None:
         _etymology_index = {}
 
 
+def _extract_pie_root(src_word: str) -> str:
+    """
+    Extract PIE root from reconstructed form.
+
+    PIE roots typically start with * and may have various suffixes.
+    """
+    if not src_word:
+        return ''
+
+    # PIE forms start with * - keep the base root
+    word = src_word.lstrip('*')
+
+    # Many PIE roots end with laryngeals (h₁, h₂, h₃) or other suffixes
+    # Strip common suffix patterns to get core root
+    # But for now, return the full form as it's the root itself
+    return src_word
+
+
+def _classify_pie_morph_type(src_word: str, relation: str) -> str:
+    """
+    Classify PIE morphological type.
+
+    Most PIE forms we retrieve are roots themselves.
+    """
+    if not src_word:
+        return 'UNKNOWN'
+
+    # If it's marked as 'root' in the etymology, it's a ROOT
+    if relation == 'root':
+        return 'ROOT'
+
+    # Most PIE reconstructions are roots
+    # Forms with suffixes like *-ti-, *-trom, etc. are derivations
+    deriv_suffixes = ['-ti-', '-trom', '-ter-', '-tor-', '-men-', '-tion']
+    word_lower = src_word.lower()
+    if any(s in word_lower for s in deriv_suffixes):
+        return 'DERIVATION'
+
+    return 'ROOT'
+
+
 def analyze_pie(english_word: str) -> list[dict]:
     """
     Forward lookup: given an English word, find its PIE ancestors from etymology templates.
@@ -70,12 +111,22 @@ def analyze_pie(english_word: str) -> list[dict]:
             seen_forms.add(src_word)
 
             relation = tmpl.get('name', '')
+
+            # Extract root and classify morph type
+            root = _extract_pie_root(src_word)
+            morph_type = _classify_pie_morph_type(src_word, relation)
+
             result = {
                 'language_code': 'ine-pro',
                 'word_native': src_word,
                 'word_translit': None,
                 'lemma': src_word,
+                'root': root,
                 'pos': '',
+                'morph_type': morph_type,
+                'derived_from_root': root if morph_type == 'DERIVATION' else None,
+                'derivation_mode': None,
+                'compound_components': None,
                 'morphological_features': {
                     'english_gloss': english_word,
                     'relation': relation

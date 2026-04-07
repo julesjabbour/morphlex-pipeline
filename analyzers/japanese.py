@@ -23,6 +23,55 @@ _POS_MAP = {
 }
 
 
+def _extract_japanese_root(lemma: str, pos: str) -> str:
+    """
+    Extract root from Japanese word.
+
+    For verbs, strip common endings to get the stem.
+    For nouns and other words, the lemma is typically the root.
+    """
+    if not lemma:
+        return ''
+
+    # For verbs, try to extract the stem
+    if pos == 'verb' and len(lemma) > 1:
+        # Common verb endings in dictionary form
+        verb_endings = ['る', 'う', 'く', 'ぐ', 'す', 'つ', 'ぬ', 'ぶ', 'む']
+        if lemma[-1] in verb_endings:
+            return lemma[:-1]
+
+    return lemma
+
+
+def _classify_japanese_morph_type(surface: str, lemma: str, pos: str, parsed_count: int) -> str:
+    """
+    Classify Japanese morphological type.
+
+    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, OTHER, UNKNOWN
+    """
+    # If the input word was split into multiple morphemes, it's likely a compound
+    if parsed_count > 1:
+        return 'COMPOUND'
+
+    # Check for common derivational patterns
+    deriv_suffixes = ['さ', 'み', 'め', 'げ']  # Nominalization suffixes
+    deriv_prefixes = ['お', 'ご', '不', '無']  # Honorific/negative prefixes
+
+    if pos in ('suffix', 'prefix'):
+        return 'DERIVATION'
+
+    if lemma:
+        if any(lemma.endswith(s) for s in deriv_suffixes):
+            return 'DERIVATION'
+        if any(lemma.startswith(p) for p in deriv_prefixes):
+            return 'DERIVATION'
+
+    if lemma:
+        return 'ROOT'
+
+    return 'UNKNOWN'
+
+
 def analyze_japanese(word: str) -> list[dict]:
     """
     Analyze a Japanese word and return morphological analyses.
@@ -44,8 +93,10 @@ def analyze_japanese(word: str) -> list[dict]:
     try:
         # Parse the word with MeCab
         parsed = _tagger(word)
+        parsed_list = list(parsed)
+        parsed_count = len([n for n in parsed_list if n.surface])
 
-        for node in parsed:
+        for node in parsed_list:
             # Skip empty nodes
             if not node.surface:
                 continue
@@ -72,6 +123,10 @@ def analyze_japanese(word: str) -> list[dict]:
             elif hasattr(node.feature, 'pron') and node.feature.pron:
                 reading = node.feature.pron
 
+            # Extract root and classify morph type
+            root = _extract_japanese_root(lemma, pos)
+            morph_type = _classify_japanese_morph_type(node.surface, lemma, pos, parsed_count)
+
             # Build morphological features
             features = {}
 
@@ -97,7 +152,12 @@ def analyze_japanese(word: str) -> list[dict]:
                 'language_code': 'ja',
                 'word_native': node.surface,
                 'lemma': lemma,
+                'root': root,
                 'pos': pos,
+                'morph_type': morph_type,
+                'derived_from_root': root if morph_type == 'DERIVATION' else None,
+                'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
+                'compound_components': None,  # Would need full word context
                 'morphological_features': features if features else None,
                 'source_tool': 'mecab',
                 'confidence': 1.0,
@@ -106,8 +166,7 @@ def analyze_japanese(word: str) -> list[dict]:
             results.append(result)
 
     except Exception as e:
-        # Log error but don't crash - return empty results
-        import logging
-        logging.error(f"Error analyzing Japanese word '{word}': {e}")
+        # Log error visibly - no suppression per project rules
+        print(f"Error analyzing Japanese word '{word}': {e}")
 
     return results

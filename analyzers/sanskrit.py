@@ -34,6 +34,40 @@ def _normalize_sanskrit(word: str) -> str:
     return normalized.strip()
 
 
+def _extract_sanskrit_root(word: str, etymology_links: list) -> str:
+    """
+    Extract Sanskrit root from etymology data if available.
+
+    Sanskrit uses a root (dhatu) system.
+    """
+    # Look for root info in etymology
+    for link in etymology_links:
+        if link.get('type') == 'root':
+            return link.get('source_word', '')
+
+    # Fallback: use normalized word
+    return _normalize_sanskrit(word)
+
+
+def _classify_sanskrit_morph_type(word: str, etymology_links: list) -> str:
+    """
+    Classify Sanskrit morphological type.
+
+    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, OTHER, UNKNOWN
+    """
+    has_root_etym = any(l.get('type') == 'root' for l in etymology_links)
+    has_derivation_etym = any(l.get('type') in ('der', 'inh') for l in etymology_links)
+
+    if has_root_etym and has_derivation_etym:
+        return 'DERIVATION'
+    elif has_root_etym:
+        return 'ROOT'
+    elif has_derivation_etym:
+        return 'DERIVATION'
+    else:
+        return 'UNKNOWN'
+
+
 def analyze_sanskrit(word: str) -> list[dict]:
     """
     Analyze a Sanskrit word and return morphological analyses.
@@ -89,12 +123,21 @@ def analyze_sanskrit(word: str) -> list[dict]:
                         'source_word': source_word
                     })
 
+        # Extract root and classify morph type
+        root = _extract_sanskrit_root(word, etymology_links)
+        morph_type = _classify_sanskrit_morph_type(word, etymology_links)
+
         result = {
             'language_code': 'sa',
             'word_native': word,
             'word_translit': None,  # Could add transliteration if available
             'lemma': word,
+            'root': root,
             'pos': match.get('pos', ''),
+            'morph_type': morph_type,
+            'derived_from_root': root if morph_type == 'DERIVATION' else None,
+            'derivation_mode': None,
+            'compound_components': None,
             'morphological_features': {
                 'english_gloss': match.get('english_word', ''),
                 'definitions': match.get('definitions', [])[:3],  # First 3 definitions

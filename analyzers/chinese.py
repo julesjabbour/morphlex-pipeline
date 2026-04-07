@@ -140,6 +140,46 @@ def _load_ids():
     return _ids
 
 
+def _extract_chinese_root(segment: str, ids_decomposition: str) -> str:
+    """
+    Extract root/radical from Chinese character using IDS decomposition.
+
+    IDS format uses operators like ⿰ (left-right), ⿱ (top-bottom), etc.
+    The semantic component (root) is often the first component after the operator.
+    """
+    if not ids_decomposition:
+        return segment
+
+    # Remove IDS operators to get components
+    operators = '⿰⿱⿲⿳⿴⿵⿶⿷⿸⿹⿺⿻'
+    components = [c for c in ids_decomposition if c not in operators]
+
+    # First component is often the semantic radical
+    if components:
+        return components[0]
+
+    return segment
+
+
+def _classify_chinese_morph_type(segment: str, ids_decomposition: str) -> str:
+    """
+    Classify Chinese morphological type.
+
+    Single characters with IDS decomposition are COMPOUND (ideographic compounds).
+    Multi-character words may be compounds.
+    """
+    if len(segment) > 1:
+        return 'COMPOUND'  # Multi-character word
+    elif ids_decomposition:
+        # Check for ideographic operators indicating compound character
+        operators = '⿰⿱⿲⿳⿴⿵⿶⿷⿸⿹⿺⿻'
+        if any(op in ids_decomposition for op in operators):
+            return 'COMPOUND'  # Compound ideograph
+        return 'ROOT'
+    else:
+        return 'ROOT'
+
+
 def analyze_chinese(word: str) -> list[dict]:
     """
     Analyze a Chinese word/phrase and return morphological analyses.
@@ -169,11 +209,19 @@ def analyze_chinese(word: str) -> list[dict]:
         pos = cedict_entry.get('pos')
 
         # For single characters, look up IDS decomposition
+        ids_decomposition = None
         compound_components = None
         if len(segment) == 1:
             ids_decomposition = ids.get(segment)
             if ids_decomposition:
                 compound_components = ids_decomposition
+        elif len(segment) > 1:
+            # Multi-character word - treat characters as components
+            compound_components = list(segment)
+
+        # Extract root and classify morph type
+        root = _extract_chinese_root(segment, ids_decomposition) if len(segment) == 1 else segment[0]
+        morph_type = _classify_chinese_morph_type(segment, ids_decomposition)
 
         # Build morphological features
         morphological_features = {}
@@ -186,9 +234,14 @@ def analyze_chinese(word: str) -> list[dict]:
             'language_code': 'zh',
             'word_native': segment,
             'lemma': segment,
+            'root': root,
             'pos': pos,
+            'morph_type': morph_type,
+            'derived_from_root': None,  # Chinese doesn't use derivational morphology like Indo-European
+            'derivation_mode': None,
             'compound_components': compound_components,
             'morphological_features': morphological_features,
+            'confidence': 1.0 if cedict_entry else 0.5,
             'source_tool': 'pkuseg+cedict+ids'
         }
         results.append(result)

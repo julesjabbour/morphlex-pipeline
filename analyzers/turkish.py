@@ -75,6 +75,36 @@ def _extract_lemma_from_analysis_string(analysis_str: str) -> tuple[str, str]:
     return str(analysis_str), None
 
 
+def _classify_turkish_morph_type(lemma: str, morphemes: list) -> str:
+    """
+    Classify Turkish morphological type based on morphemes.
+
+    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, OTHER, UNKNOWN
+    """
+    if not morphemes:
+        return 'ROOT' if lemma else 'UNKNOWN'
+
+    # Check for derivational suffixes in morphemes
+    derivational_tags = {'Ness', 'Able', 'Less', 'Agt', 'Dim', 'Become', 'Acquire', 'Related'}
+    has_derivation = any(str(m) in derivational_tags for m in morphemes)
+
+    if has_derivation:
+        return 'DERIVATION'
+    elif lemma:
+        return 'ROOT'
+    else:
+        return 'UNKNOWN'
+
+
+def _extract_turkish_root(lemma: str, morphemes: list) -> str:
+    """
+    Extract root from Turkish word.
+
+    In Turkish agglutinative morphology, the lemma is typically the root.
+    """
+    return lemma if lemma else ''
+
+
 def analyze_turkish(word: str) -> list[dict]:
     """
     Analyze a Turkish word and return morphological analyses.
@@ -100,12 +130,20 @@ def analyze_turkish(word: str) -> list[dict]:
             morphemes = parse.morphemes if hasattr(parse, 'morphemes') and parse.morphemes else []
             morphological_features = _parse_morphemes(morphemes)
 
+            # Extract root (lemma in Turkish is typically the root)
+            root = _extract_turkish_root(parse.lemma, morphemes)
+            morph_type = _classify_turkish_morph_type(parse.lemma, morphemes)
+
             result = {
                 'language_code': 'tr',
                 'word_native': word,
                 'lemma': parse.lemma,
-                'root': None,
+                'root': root,
                 'pos': parse.pos,
+                'morph_type': morph_type,
+                'derived_from_root': root if morph_type == 'DERIVATION' else None,
+                'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
+                'compound_components': None,
                 'morphological_features': morphological_features,
                 'confidence': 0.0,
                 'source_tool': 'zeyrek'
