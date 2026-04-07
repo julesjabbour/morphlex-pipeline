@@ -1,164 +1,140 @@
 #!/bin/bash
-# Task: Diagnose why commit 3aafb44 ran but didn't post to Slack
-# Session: Fetch cron logs, report files, and test webhook
+# Task: Retrieve pkl rebuild report from ~16:44-16:53 UTC today
+# Session: Show key count, file size, and any errors/warnings
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 GIT_HEAD=$(git rev-parse HEAD)
 START_TIME=$(date -Iseconds)
 
-echo "=== SLACK POST DIAGNOSTIC ==="
+echo "=== PKL REBUILD REPORT RETRIEVAL ==="
 echo "Start: $START_TIME"
 echo "Git HEAD: $GIT_HEAD"
 echo ""
 
 # ============================================================
-# PART 1: CRON LOG - LAST 100 LINES
+# PART 1: LIST ALL REPORT FILES FROM TODAY
 # ============================================================
 
 echo "============================================================"
-echo "PART 1: /tmp/morphlex_cron.log (last 100 lines)"
-echo "============================================================"
-echo ""
-
-if [ -f /tmp/morphlex_cron.log ]; then
-    tail -100 /tmp/morphlex_cron.log
-else
-    echo "File not found: /tmp/morphlex_cron.log"
-fi
-
-echo ""
-
-# ============================================================
-# PART 2: DEBUG LOG
-# ============================================================
-
-echo "============================================================"
-echo "PART 2: /tmp/morphlex_debug.log (last 50 lines)"
-echo "============================================================"
-echo ""
-
-if [ -f /tmp/morphlex_debug.log ]; then
-    tail -50 /tmp/morphlex_debug.log
-else
-    echo "File not found: /tmp/morphlex_debug.log"
-fi
-
-echo ""
-
-# ============================================================
-# PART 3: REPORT FILES FROM TODAY
-# ============================================================
-
-echo "============================================================"
-echo "PART 3: Report files from /mnt/pgdata/morphlex/reports/"
+echo "PART 1: All report files from today (with timestamps)"
 echo "============================================================"
 echo ""
 
 REPORTS_DIR="/mnt/pgdata/morphlex/reports"
-
-echo "Files in reports dir (sorted by date):"
-ls -lt "$REPORTS_DIR" 2>/dev/null || echo "  (directory not found or empty)"
-echo ""
-
-# Check for batch_1000_test.csv
-echo "--- batch_1000_test.csv (first 50 lines if exists) ---"
-if [ -f "$REPORTS_DIR/batch_1000_test.csv" ]; then
-    echo "File size: $(stat -c%s "$REPORTS_DIR/batch_1000_test.csv") bytes"
-    echo "Modified: $(stat -c%y "$REPORTS_DIR/batch_1000_test.csv")"
-    echo ""
-    head -50 "$REPORTS_DIR/batch_1000_test.csv"
-    echo ""
-    echo "(showing first 50 lines only)"
-else
-    echo "File not found: batch_1000_test.csv"
-fi
-
-echo ""
-
-# Check for batch_1000_errors.md
-echo "--- batch_1000_errors.md (full contents if exists) ---"
-if [ -f "$REPORTS_DIR/batch_1000_errors.md" ]; then
-    echo "File size: $(stat -c%s "$REPORTS_DIR/batch_1000_errors.md") bytes"
-    echo "Modified: $(stat -c%y "$REPORTS_DIR/batch_1000_errors.md")"
-    echo ""
-    cat "$REPORTS_DIR/batch_1000_errors.md"
-else
-    echo "File not found: batch_1000_errors.md"
-fi
-
+echo "Files in $REPORTS_DIR:"
+ls -la "$REPORTS_DIR"/ 2>/dev/null | grep "Apr  7" || echo "  (no files from today)"
 echo ""
 
 # ============================================================
-# PART 4: WEBHOOK URL CHECK
+# PART 2: FIND PKL-RELATED REPORT FROM 16:44-16:53 WINDOW
 # ============================================================
 
 echo "============================================================"
-echo "PART 4: Webhook URL validation"
+echo "PART 2: Finding pkl rebuild report from 16:44-16:53 UTC"
 echo "============================================================"
 echo ""
 
-WEBHOOK_FILE="/mnt/pgdata/morphlex/.webhook_url"
-if [ -f "$WEBHOOK_FILE" ]; then
-    URL=$(cat "$WEBHOOK_FILE")
-    echo "Webhook file exists: YES"
-    echo "URL length: ${#URL} characters"
-    echo "URL starts with https://: $(if [[ "$URL" == https://* ]]; then echo YES; else echo NO; fi)"
-    # Show first 30 chars only (safe portion)
-    echo "URL prefix: ${URL:0:30}..."
+# Find files modified between 16:40 and 17:00 today
+echo "Files modified between 16:40-17:00 UTC today:"
+find "$REPORTS_DIR" -type f -newermt "2026-04-07 16:40:00" ! -newermt "2026-04-07 17:00:00" -ls 2>/dev/null
+echo ""
 
-    # Test the webhook with a simple ping
+# Look for any file with pkl, forward_translation, or rebuild in name
+echo "Files with pkl/forward/rebuild in name:"
+ls -la "$REPORTS_DIR"/*pkl* "$REPORTS_DIR"/*forward* "$REPORTS_DIR"/*rebuild* 2>/dev/null || echo "  (none found with those names)"
+echo ""
+
+# ============================================================
+# PART 3: CAT ALL .md FILES FROM 16:40-17:00 WINDOW
+# ============================================================
+
+echo "============================================================"
+echo "PART 3: Contents of .md files from 16:40-17:00 UTC window"
+echo "============================================================"
+echo ""
+
+for f in $(find "$REPORTS_DIR" -name "*.md" -type f -newermt "2026-04-07 16:40:00" ! -newermt "2026-04-07 17:00:00" 2>/dev/null); do
+    echo "--- FILE: $f ---"
+    echo "Size: $(stat -c%s "$f") bytes"
+    echo "Modified: $(stat -c%y "$f")"
     echo ""
-    echo "Testing webhook with curl..."
-    RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" \
-        -d '{"text":"🔍 Webhook test from diagnostic task"}' \
-        "$URL" 2>&1)
-    echo "HTTP response code: $RESPONSE"
-
-    if [ "$RESPONSE" = "200" ]; then
-        echo "Webhook test: SUCCESS"
-    else
-        echo "Webhook test: FAILED"
-    fi
-else
-    echo "Webhook file NOT FOUND at $WEBHOOK_FILE"
-    echo "This is likely the root cause - no webhook URL configured!"
-fi
-
-echo ""
-
-# ============================================================
-# PART 5: MARKER FILE STATUS
-# ============================================================
-
-echo "============================================================"
-echo "PART 5: Marker file status"
-echo "============================================================"
-echo ""
-
-echo "Marker directory contents:"
-ls -la /tmp/morphlex_markers/ 2>/dev/null || echo "  (directory not found)"
-echo ""
-
-# Check for marker from commit 3aafb44
-TASK_3AAFB44_HASH="77197b2ae2ae3cb59724d8f2d7a9e3bd"  # Approximate hash
-echo "Known marker hashes:"
-for f in /tmp/morphlex_markers/done_*; do
-    if [ -f "$f" ]; then
-        basename "$f"
-        stat -c "  Created: %y" "$f"
-    fi
+    cat "$f"
+    echo ""
+    echo "--- END OF FILE ---"
+    echo ""
 done
+
+# Also check for any .txt or .log files in that window
+for f in $(find "$REPORTS_DIR" -type f \( -name "*.txt" -o -name "*.log" \) -newermt "2026-04-07 16:40:00" ! -newermt "2026-04-07 17:00:00" 2>/dev/null); do
+    echo "--- FILE: $f ---"
+    echo "Size: $(stat -c%s "$f") bytes"
+    echo "Modified: $(stat -c%y "$f")"
+    echo ""
+    cat "$f"
+    echo ""
+    echo "--- END OF FILE ---"
+    echo ""
+done
+
+# ============================================================
+# PART 4: CURRENT PKL FILE STATS
+# ============================================================
+
+echo "============================================================"
+echo "PART 4: Current forward_translations.pkl stats"
+echo "============================================================"
+echo ""
+
+PKL_FILE="/mnt/pgdata/morphlex/data/forward_translations.pkl"
+if [ -f "$PKL_FILE" ]; then
+    echo "File: $PKL_FILE"
+    echo "Size: $(stat -c%s "$PKL_FILE") bytes ($(numfmt --to=iec-i --suffix=B $(stat -c%s "$PKL_FILE")))"
+    echo "Modified: $(stat -c%y "$PKL_FILE")"
+    echo ""
+
+    # Get key count via Python
+    echo "Key count from Python:"
+    python3 -c "
+import pickle
+with open('$PKL_FILE', 'rb') as f:
+    data = pickle.load(f)
+print(f'Total keys: {len(data)}')
+print(f'Type: {type(data).__name__}')
+if len(data) > 0:
+    sample_key = list(data.keys())[0]
+    print(f'Sample key: {sample_key!r}')
+    print(f'Sample value type: {type(data[sample_key]).__name__}')
+"
+else
+    echo "PKL file not found at $PKL_FILE"
+fi
+
+echo ""
+
+# ============================================================
+# PART 5: CHECK CRON LOG FOR PKL REBUILD OUTPUT
+# ============================================================
+
+echo "============================================================"
+echo "PART 5: Cron log entries from 16:40-17:00 UTC"
+echo "============================================================"
+echo ""
+
+if [ -f /tmp/morphlex_cron.log ]; then
+    echo "Searching cron log for 16:4* and 16:5* entries..."
+    grep -E "^2026-04-07T16:4|^2026-04-07T16:5|16:4|16:5" /tmp/morphlex_cron.log | tail -200
+else
+    echo "Cron log not found"
+fi
 
 echo ""
 
 END_TIME=$(date -Iseconds)
 echo "============================================================"
-echo "DIAGNOSTIC COMPLETE"
+echo "RETRIEVAL COMPLETE"
 echo "============================================================"
 echo ""
 echo "Start: $START_TIME"
 echo "End:   $END_TIME"
 echo "Git HEAD: $GIT_HEAD"
-echo ""
-echo "If this message appears in Slack, the slack_report.sh fix is working!"
