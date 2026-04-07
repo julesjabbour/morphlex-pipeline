@@ -4,7 +4,17 @@ import logging
 import os
 import pickle
 import unicodedata
+import warnings
 from typing import Any, Optional
+
+# Suppress ALL third-party library warnings BEFORE imports
+# This prevents Zeyrek, CAMeL, and other libraries from flooding stdout
+warnings.filterwarnings('ignore')
+
+# Also suppress via logging
+for logger_name in ['zeyrek', 'zeyrek.rulebasedanalyzer', 'camel_tools',
+                     'spacy', 'fugashi', 'mecab', 'pkuseg', 'morpheus']:
+    logging.getLogger(logger_name).setLevel(logging.ERROR)
 
 import psycopg2
 from psycopg2.extras import Json

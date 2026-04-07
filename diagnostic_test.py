@@ -14,8 +14,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import logging
 logging.disable(logging.CRITICAL)
 
-# Add pipeline to path
-sys.path.insert(0, '/home/user/morphlex-pipeline')
+# Add pipeline to path - all code lives at /mnt/pgdata/morphlex
+sys.path.insert(0, '/mnt/pgdata/morphlex')
 
 START_TIME = datetime.datetime.now()
 

@@ -27,8 +27,8 @@ logging.getLogger('urllib3').setLevel(logging.ERROR)
 import warnings
 warnings.filterwarnings('ignore')
 
-# Set up path
-sys.path.insert(0, '/home/user/morphlex-pipeline')
+# Set up path - all code lives at /mnt/pgdata/morphlex
+sys.path.insert(0, '/mnt/pgdata/morphlex')
 
 # Test Arabic words
 TEST_WORDS = [
@@ -173,7 +173,7 @@ def run_test():
     print("=" * 70)
 
     # Write summary report
-    report_path = '/home/user/morphlex-pipeline/test_report.md'
+    report_path = '/mnt/pgdata/morphlex/test_report.md'
     with open(report_path, 'w') as f:
         f.write("# Arabic Anchor Pipeline Test Report\n\n")
         f.write(f"**Start:** {start_time.isoformat()}\n")

@@ -3,13 +3,14 @@
 # Tests the pipeline with 10 Arabic words across all 11 languages
 #
 # Usage: bash next_task.sh
+# Working directory: /mnt/pgdata/morphlex
 
 set -e
 
-cd /home/user/morphlex-pipeline
+cd /mnt/pgdata/morphlex
 
-# Activate venv (try both possible locations)
-source /opt/morphlex-venv/bin/activate 2>/dev/null || source /mnt/pgdata/morphlex/venv/bin/activate 2>/dev/null || true
+# Activate venv
+source /mnt/pgdata/morphlex/venv/bin/activate
 
 # Suppress warnings at bash level
 export PYTHONWARNINGS="ignore"
