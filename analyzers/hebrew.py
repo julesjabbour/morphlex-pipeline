@@ -44,8 +44,8 @@ def _extract_hebrew_root(word: str, etymology_links: list) -> str:
         if link.get('type') == 'root':
             return link.get('source_word', '')
 
-    # Fallback: use normalized word as root approximation
-    return _normalize_hebrew(word)
+    # No root found - return empty string (not the normalized word)
+    return ''
 
 
 def _classify_hebrew_morph_type(word: str, etymology_links: list) -> str:

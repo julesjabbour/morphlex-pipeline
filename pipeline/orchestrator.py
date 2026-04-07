@@ -304,11 +304,13 @@ class PipelineOrchestrator:
             insert_sql = """
                 INSERT INTO lexicon.entries (
                     language_code, word_native, word_translit, lemma, root,
-                    stem, pattern, pos, morphological_features, derivation_type,
+                    stem, pattern, pos, morph_type, derived_from_root, derivation_mode,
+                    morphological_features, derivation_type,
                     compound_components, source_tool, confidence
                 ) VALUES (
                     %(language_code)s, %(word_native)s, %(word_translit)s, %(lemma)s, %(root)s,
-                    %(stem)s, %(pattern)s, %(pos)s, %(morphological_features)s, %(derivation_type)s,
+                    %(stem)s, %(pattern)s, %(pos)s, %(morph_type)s, %(derived_from_root)s, %(derivation_mode)s,
+                    %(morphological_features)s, %(derivation_type)s,
                     %(compound_components)s, %(source_tool)s, %(confidence)s
                 )
             """
@@ -325,6 +327,9 @@ class PipelineOrchestrator:
                     'stem': r.get('stem'),
                     'pattern': r.get('pattern'),
                     'pos': r.get('pos'),
+                    'morph_type': r.get('morph_type'),
+                    'derived_from_root': r.get('derived_from_root'),
+                    'derivation_mode': r.get('derivation_mode'),
                     'morphological_features': Json(r.get('morphological_features')) if r.get('morphological_features') else None,
                     'derivation_type': r.get('derivation_type'),
                     'compound_components': r.get('compound_components'),

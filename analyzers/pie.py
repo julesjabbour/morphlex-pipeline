@@ -42,8 +42,8 @@ def _extract_pie_root(src_word: str) -> str:
 
     # Many PIE roots end with laryngeals (h₁, h₂, h₃) or other suffixes
     # Strip common suffix patterns to get core root
-    # But for now, return the full form as it's the root itself
-    return src_word
+    # Return without asterisk prefix
+    return word
 
 
 def _classify_pie_morph_type(src_word: str, relation: str) -> str:
