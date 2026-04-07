@@ -1,319 +1,297 @@
 #!/bin/bash
-# Task: Test slack_report.sh split fix + Print warning suppression audit
-# Session 46 - Testing truncation fix from commit 3a8fda8
+# Task: Rebuild forward_translations.pkl + 1000-word batch test
+# Session: Rebuild pkl with full logging, then test 1000 Arabic words across all 11 languages
+# Zero error suppression - all exceptions must log visibly
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 GIT_HEAD=$(git rev-parse HEAD)
-GIT_SHORT=$(git rev-parse --short HEAD)
 START_TIME=$(date -Iseconds)
 
-echo "=== FULL PIPELINE HEALTH CHECK + WARNING AUDIT ==="
+echo "=== PKL REBUILD + 1000-WORD BATCH TEST ==="
 echo "Start: $START_TIME"
 echo "Git HEAD: $GIT_HEAD"
 echo ""
-echo "Purpose: Testing slack_report.sh split fix (commit 3a8fda8)"
-echo "Expected: Output > 3500 chars should split into multiple Slack messages"
-echo ""
 
 # ============================================================
-# TASK 1: FULL PIPELINE HEALTH CHECK (Parts 1, 2, 3)
+# TASK 1: REBUILD forward_translations.pkl WITH FULL LOGGING
 # ============================================================
 
 echo "============================================================"
-echo "TASK 1: FULL PIPELINE HEALTH CHECK"
+echo "TASK 1: REBUILD forward_translations.pkl"
 echo "============================================================"
 echo ""
 
-echo "=== PART 1: INFRASTRUCTURE VERIFICATION ==="
-echo ""
+# Record previous pkl stats
+PKL_PATH="/mnt/pgdata/morphlex/data/forward_translations.pkl"
+PREV_KEY_COUNT=18807  # Known previous count
 
-# 1a. Crontab status
-echo "--- Crontab Status ---"
-CRON_OUTPUT=$(crontab -l 2>&1)
-echo "$CRON_OUTPUT"
-CRON_ENABLED="NO"
-if echo "$CRON_OUTPUT" | grep -q "morphlex"; then
-    CRON_ENABLED="YES"
-fi
-echo ""
-
-# 1b. Flock verification
-echo "--- Flock Lock File ---"
-if [ -f /tmp/morphlex_run.lock ]; then
-    echo "Lock file exists: /tmp/morphlex_run.lock"
-    ls -la /tmp/morphlex_run.lock
+if [ -f "$PKL_PATH" ]; then
+    PREV_SIZE=$(stat -c%s "$PKL_PATH")
+    echo "Previous pkl file size: $PREV_SIZE bytes"
 else
-    echo "Lock file does not exist (will be created on next run)"
+    PREV_SIZE=0
+    echo "No previous pkl file exists"
 fi
+echo "Previous key count (known): $PREV_KEY_COUNT"
 echo ""
 
-# 1c. Marker files
-echo "--- Marker Files ---"
-MARKER_DIR="/tmp/morphlex_markers"
-if [ -d "$MARKER_DIR" ]; then
-    echo "Marker directory contents:"
-    ls -la "$MARKER_DIR"
-    TASK_HASH=$(md5sum /mnt/pgdata/morphlex/next_task.sh 2>>/tmp/morphlex_debug.log | cut -d' ' -f1)
-    echo ""
-    echo "Current task hash: $TASK_HASH"
-    if [ -f "$MARKER_DIR/done_$TASK_HASH" ]; then
-        echo "Marker exists for current task: YES"
-    else
-        echo "Marker exists for current task: NO"
-    fi
-else
-    echo "No marker directory yet"
-fi
+echo "--- Running build_forward_translations.py with FULL logging ---"
 echo ""
 
-# 1d. Zombie processes
-echo "--- Process Check (zombies) ---"
-ZOMBIES=$(ps aux | grep -E "(python.*morphlex|build_forward)" | grep -v grep | wc -l)
-echo "Active morphlex/build processes: $ZOMBIES"
-ps aux | grep -E "(python.*morphlex|build_forward)" | grep -v grep || echo "(none)"
+# Run the build script - all output visible, no suppression
+python3 /mnt/pgdata/morphlex/pipeline/build_forward_translations.py 2>&1
+BUILD_EXIT_CODE=$?
+
+echo ""
+echo "Build exit code: $BUILD_EXIT_CODE"
 echo ""
 
-# 1e. Disk space
-echo "--- Disk Space (/mnt/pgdata) ---"
-df -h /mnt/pgdata
-echo ""
+# Analyze the rebuilt pkl
+if [ -f "$PKL_PATH" ]; then
+    NEW_SIZE=$(stat -c%s "$PKL_PATH")
+    echo "New pkl file size: $NEW_SIZE bytes ($(echo "scale=2; $NEW_SIZE/1024/1024" | bc) MB)"
 
-# 1f. Memory usage
-echo "--- Memory Usage ---"
-free -h
-echo ""
-
-echo "=== PART 2: PIPELINE END-TO-END VERIFICATION ==="
-echo ""
-
-python3 << 'PYEOF'
+    python3 << 'PYEOF'
 import pickle
-import os
-import re
-import random
 import sys
 
 PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
-ARABIC_DIACRITICS = re.compile(r'[\u064B-\u065F\u0670]')
-
-# 10 test words from S44
-TEST_WORDS = ['ماء', 'نار', 'يد', 'عين', 'حجر', 'قلب', 'شمس', 'قمر', 'شجرة', 'دم']
-LANGUAGES = ['ar', 'en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
-
-if not os.path.exists(PKL_PATH):
-    print(f"ERROR: PKL file not found at {PKL_PATH}")
-    sys.exit(1)
+PREV_COUNT = 18807
 
 with open(PKL_PATH, 'rb') as f:
     translations = pickle.load(f)
 
-file_size = os.path.getsize(PKL_PATH)
-print(f"PKL file size: {file_size:,} bytes ({file_size/1024/1024:.2f} MB)")
-print(f"Total Arabic keys: {len(translations):,}")
+new_count = len(translations)
+print(f"New key count: {new_count:,}")
+print(f"Previous key count: {PREV_COUNT:,}")
+
+diff = new_count - PREV_COUNT
+if diff > 0:
+    print(f"CHANGE: +{diff} entries gained")
+elif diff < 0:
+    print(f"CHANGE: {diff} entries lost")
+else:
+    print("CHANGE: No difference (same count)")
+
+# Language coverage stats
 print()
+print("Language coverage in rebuilt pkl:")
+lang_counts = {}
+for word, trans in translations.items():
+    for lang in trans.keys():
+        lang_counts[lang] = lang_counts.get(lang, 0) + 1
 
-# Show 5 sample keys to prove diacritics are stripped
-print("5 SAMPLE PKL KEYS (verify zero diacritics):")
-random.seed(42)
-sample_keys = random.sample(list(translations.keys()), min(5, len(translations)))
-for key in sample_keys:
-    has_diacritics = bool(ARABIC_DIACRITICS.search(key))
-    status = "HAS DIACRITICS!" if has_diacritics else "clean"
-    print(f"  '{key}' - {status}")
-print()
-
-# Count total keys with diacritics
-keys_with_diacritics = sum(1 for k in translations.keys() if ARABIC_DIACRITICS.search(k))
-print(f"Keys with diacritics: {keys_with_diacritics} / {len(translations)}")
-diacritics_status = "PASS (zero diacritics)" if keys_with_diacritics == 0 else f"FAIL ({keys_with_diacritics} keys have diacritics)"
-print(f"Diacritics check: {diacritics_status}")
-print()
-
-# Test 10 words across 11 languages
-print("10-WORD ARABIC TEST:")
-lang_results = {lang: 0 for lang in LANGUAGES}
-total = 0
-words_found = 0
-
-for word in TEST_WORDS:
-    trans = translations.get(word, {})
-    if trans:
-        words_found += 1
-        lang_results['ar'] += 1
-        total += 1
-        for lang in LANGUAGES[1:]:  # skip 'ar'
-            if lang in trans:
-                lang_results[lang] += 1
-                total += 1
-
-print()
-ok_count = 0
-for lang in LANGUAGES:
-    count = lang_results[lang]
-    status = "[OK]" if count > 0 else "[EMPTY]"
-    if count > 0:
-        ok_count += 1
-    print(f"  {lang} : {count} results {status}")
-
-print()
-print(f"Languages with results: {ok_count}/11")
-print(f"TOTAL: {total} results from 10 words x 11 languages")
-
-# Expected: 10/11 OK, ine-pro EMPTY, ~90 results
-expected_match = (ok_count >= 10 and lang_results['ine-pro'] == 0 and total >= 80)
-match_status = "PASS" if expected_match else "CHECK"
-print(f"Expected pattern (10/11 OK, ine-pro EMPTY, ~90): {match_status}")
+for lang in sorted(lang_counts.keys()):
+    print(f"  {lang}: {lang_counts[lang]:,} entries")
 PYEOF
+else
+    echo "ERROR: PKL file was not created!"
+fi
+
+echo ""
+echo "============================================================"
+echo "TASK 1 COMPLETE"
+echo "============================================================"
 echo ""
 
-echo "=== PART 3: PRODUCTION READINESS ANALYSIS ==="
+# ============================================================
+# TASK 2: 1000-WORD BATCH TEST WITH ALL ADAPTERS
+# ============================================================
+
+echo "============================================================"
+echo "TASK 2: 1000-WORD BATCH TEST ACROSS ALL 11 LANGUAGES"
+echo "============================================================"
 echo ""
 
 python3 << 'PYEOF'
 import pickle
+import csv
 import os
-import random
-import psycopg2
+import sys
+import traceback
+from datetime import datetime
+from collections import defaultdict
+
+# Import orchestrator
+sys.path.insert(0, '/mnt/pgdata/morphlex')
+from pipeline.orchestrator import PipelineOrchestrator
 
 PKL_PATH = '/mnt/pgdata/morphlex/data/forward_translations.pkl'
-LANGUAGES = ['ar', 'en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
+REPORTS_DIR = '/mnt/pgdata/morphlex/reports'
+CSV_PATH = os.path.join(REPORTS_DIR, 'batch_1000_test.csv')
+ERROR_PATH = os.path.join(REPORTS_DIR, 'batch_1000_errors.md')
 
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
+# Load pkl and get first 1000 keys
+print("Loading forward_translations.pkl...")
 with open(PKL_PATH, 'rb') as f:
     translations = pickle.load(f)
 
-total_keys = len(translations)
-print(f"=== PRODUCTION READINESS: ~{total_keys:,} Arabic Concepts ===")
+arabic_keys = list(translations.keys())[:1000]
+print(f"Testing first {len(arabic_keys)} Arabic keys across 11 languages")
 print()
 
-# 10 sample Arabic keys with translation counts
-print("10 SAMPLE ARABIC KEYS WITH TRANSLATION COVERAGE:")
-random.seed(123)
-sample_keys = random.sample(list(translations.keys()), min(10, total_keys))
-for key in sample_keys:
-    trans = translations.get(key, {})
-    lang_count = len(trans)
-    langs = list(trans.keys())[:5]
-    print(f"  '{key}': {lang_count} languages ({', '.join(langs)}{'...' if lang_count > 5 else ''})")
+# Languages to test
+LANGUAGES = ['ar', 'en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
+
+# Initialize orchestrator
+print("Initializing orchestrator...")
+orchestrator = PipelineOrchestrator()
+
+# Track results and errors
+results = []
+errors = []
+error_counts = defaultdict(int)
+success_count = 0
+fail_count = 0
+skipped_count = 0
+
+print("Running batch test...")
 print()
 
-# Estimate total rows
-total_translation_count = 0
-for key, trans in translations.items():
-    total_translation_count += 1  # Arabic itself
-    total_translation_count += len(trans)  # all translations
+for i, arabic_word in enumerate(arabic_keys):
+    if (i + 1) % 100 == 0:
+        print(f"  Processed {i + 1}/1000 words...")
 
-avg_per_key = total_translation_count / total_keys if total_keys > 0 else 0
-print(f"Total Arabic keys: {total_keys:,}")
-print(f"Total translation pairs: {total_translation_count:,}")
-print(f"Average translations per key: {avg_per_key:.2f}")
-print(f"Estimated rows for full run: ~{total_translation_count:,}")
-print()
+    word_succeeded = False
 
-# Database connectivity check
-print("DATABASE CONNECTIVITY CHECK:")
-db_accessible = False
-schema_exists = False
-table_exists = False
-db_error = None
+    for lang in LANGUAGES:
+        try:
+            # For Arabic, call directly. For others, orchestrator handles translation lookup
+            analysis_results = orchestrator.analyze(arabic_word, lang)
 
-try:
-    conn = psycopg2.connect(
-        host='localhost',
-        dbname='morphlex',
-        user='morphlex_user',
-        password='morphlex_2026'
-    )
-    db_accessible = True
-    print("  Database connection: OK")
+            if analysis_results:
+                word_succeeded = True
+                for r in analysis_results:
+                    results.append({
+                        'arabic_key': arabic_word,
+                        'language': lang,
+                        'word_native': r.get('word_native', ''),
+                        'lemma': r.get('lemma', ''),
+                        'root': r.get('root', ''),
+                        'pos': r.get('pos', ''),
+                        'source_tool': r.get('source_tool', ''),
+                        'status': 'OK'
+                    })
+            else:
+                # No results - could be no translation available or adapter returned empty
+                skipped_count += 1
 
-    cur = conn.cursor()
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            error_counts[f"{error_type}: {error_msg[:100]}"] += 1
 
-    # Check if lexicon schema exists
-    cur.execute("SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'lexicon'")
-    if cur.fetchone():
-        schema_exists = True
-        print("  Schema 'lexicon': EXISTS")
+            errors.append({
+                'arabic_key': arabic_word,
+                'language': lang,
+                'error_type': error_type,
+                'error_message': error_msg,
+                'traceback': traceback.format_exc()
+            })
+            fail_count += 1
+
+    if word_succeeded:
+        success_count += 1
     else:
-        print("  Schema 'lexicon': NOT FOUND")
+        fail_count += 1
 
-    # Check if entries table exists
-    cur.execute("""
-        SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'lexicon' AND table_name = 'entries'
-    """)
-    if cur.fetchone():
-        table_exists = True
-        print("  Table 'lexicon.entries': EXISTS")
-        # Count existing rows
-        cur.execute("SELECT COUNT(*) FROM lexicon.entries")
-        row_count = cur.fetchone()[0]
-        print(f"  Existing rows in lexicon.entries: {row_count:,}")
+print()
+print("=" * 60)
+print("BATCH TEST RESULTS SUMMARY")
+print("=" * 60)
+print()
+print(f"Total Arabic words tested: {len(arabic_keys)}")
+print(f"Words with at least one successful analysis: {success_count}")
+print(f"Words with zero results across all languages: {fail_count - len(errors)}")
+print(f"Total analysis results: {len(results)}")
+print(f"Total errors encountered: {len(errors)}")
+print(f"Skipped (no translation available): {skipped_count}")
+print()
+
+# Results by language
+print("Results per language:")
+lang_result_counts = defaultdict(int)
+for r in results:
+    lang_result_counts[r['language']] += 1
+
+for lang in LANGUAGES:
+    count = lang_result_counts[lang]
+    status = "[OK]" if count > 0 else "[EMPTY]"
+    print(f"  {lang}: {count} results {status}")
+
+print()
+
+# Error summary
+if error_counts:
+    print("ERROR TYPES AND FREQUENCIES:")
+    for err, count in sorted(error_counts.items(), key=lambda x: -x[1]):
+        print(f"  {count}x: {err}")
+else:
+    print("No errors encountered!")
+
+print()
+
+# Write CSV results
+print(f"Writing results to {CSV_PATH}...")
+with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
+    if results:
+        writer = csv.DictWriter(f, fieldnames=['arabic_key', 'language', 'word_native', 'lemma', 'root', 'pos', 'source_tool', 'status'])
+        writer.writeheader()
+        writer.writerows(results)
+        print(f"  Wrote {len(results)} rows to CSV")
     else:
-        print("  Table 'lexicon.entries': NOT FOUND")
+        f.write("No results\n")
+        print("  No results to write")
 
-    conn.close()
-except Exception as e:
-    db_error = str(e)
-    print(f"  Database connection: FAILED - {e}")
+# Write error log
+print(f"Writing errors to {ERROR_PATH}...")
+with open(ERROR_PATH, 'w', encoding='utf-8') as f:
+    f.write("# Batch 1000 Test - Error Log\n\n")
+    f.write(f"**Date:** {datetime.now().isoformat()}\n")
+    f.write(f"**Total Errors:** {len(errors)}\n\n")
 
+    if error_counts:
+        f.write("## Error Summary by Type\n\n")
+        f.write("| Error Type | Count |\n")
+        f.write("|------------|-------|\n")
+        for err, count in sorted(error_counts.items(), key=lambda x: -x[1]):
+            f.write(f"| {err[:80]} | {count} |\n")
+        f.write("\n")
+
+    if errors:
+        f.write("## Detailed Errors\n\n")
+        for i, e in enumerate(errors[:50], 1):  # First 50 errors only
+            f.write(f"### Error {i}\n")
+            f.write(f"- **Arabic Key:** {e['arabic_key']}\n")
+            f.write(f"- **Language:** {e['language']}\n")
+            f.write(f"- **Type:** {e['error_type']}\n")
+            f.write(f"- **Message:** {e['error_message']}\n")
+            f.write(f"```\n{e['traceback']}\n```\n\n")
+
+        if len(errors) > 50:
+            f.write(f"\n... and {len(errors) - 50} more errors (see full log)\n")
+    else:
+        f.write("## No Errors\n\nAll 1000 words processed without exceptions.\n")
+
+print(f"  Wrote error log")
 print()
-
-# Check orchestrator/run_pipeline
-print("ORCHESTRATOR CHECK:")
-orchestrator_path = '/mnt/pgdata/morphlex/pipeline/orchestrator.py'
-run_pipeline_path = '/mnt/pgdata/morphlex/run_pipeline.py'
-
-if os.path.exists(orchestrator_path):
-    print(f"  {orchestrator_path}: EXISTS")
-else:
-    print(f"  {orchestrator_path}: NOT FOUND")
-
-if os.path.exists(run_pipeline_path):
-    print(f"  {run_pipeline_path}: EXISTS")
-else:
-    print(f"  {run_pipeline_path}: NOT FOUND (may need to be created)")
-
-print()
-
-# Blockers summary
-print("=== BLOCKERS SUMMARY ===")
-blockers = []
-if not db_accessible:
-    blockers.append(f"Database not accessible: {db_error}")
-if not schema_exists:
-    blockers.append("Schema 'lexicon' does not exist")
-if not table_exists:
-    blockers.append("Table 'lexicon.entries' does not exist")
-if not os.path.exists(run_pipeline_path):
-    blockers.append("run_pipeline.py does not exist (batch runner needed)")
-
-if blockers:
-    print("BLOCKERS FOUND:")
-    for b in blockers:
-        print(f"  - {b}")
-else:
-    print("NO BLOCKERS - Ready for production run")
-print()
+print("BATCH TEST COMPLETE")
 PYEOF
 
-echo "============================================================"
-echo "TASK 2: WARNING SUPPRESSION AUDIT"
-echo "============================================================"
-echo ""
-echo "Full contents of /mnt/pgdata/morphlex/reports/warning_suppression_audit.md:"
-echo ""
-cat /mnt/pgdata/morphlex/reports/warning_suppression_audit.md
 echo ""
 
 END_TIME=$(date -Iseconds)
 echo "============================================================"
-echo "REPORT COMPLETE"
+echo "ALL TASKS COMPLETE"
 echo "============================================================"
 echo ""
 echo "Start: $START_TIME"
 echo "End:   $END_TIME"
 echo "Git HEAD: $GIT_HEAD"
 echo ""
-echo "This output should be split into multiple Slack messages."
-echo "If you see [Part 1/N], [Part 2/N], etc. the fix is working!"
+echo "Output files:"
+echo "  - /mnt/pgdata/morphlex/reports/batch_1000_test.csv"
+echo "  - /mnt/pgdata/morphlex/reports/batch_1000_errors.md"
