@@ -1,7 +1,8 @@
 #!/bin/bash
-# DIAGNOSE and REBUILD forward_translations.pkl with INLINE Python
+# COMPREHENSIVE DIAGNOSTIC: Find how Arabic translations are stored in Wiktextract dump
+# Then build Arabic→X forward_translations.pkl
 #
-# This script does NOT rely on build_forward_translations.py - all logic is inline.
+# This script does deep analysis of the dump to understand its structure.
 #
 # Usage: bash next_task.sh
 # Working directory: /mnt/pgdata/morphlex
@@ -10,285 +11,276 @@ set -e
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== DIAGNOSE AND REBUILD FORWARD TRANSLATIONS ==="
+echo "=== COMPREHENSIVE WIKTEXTRACT DUMP ANALYSIS ==="
 echo "Start: $(date -Iseconds)"
 echo ""
 
 ###############################################################################
-# STEP 1: DIAGNOSE - What's actually on the VM?
+# STEP 1: DEEP DUMP ANALYSIS - Find all translation language codes
 ###############################################################################
 
-echo "=========================================="
-echo "STEP 1: DIAGNOSTIC - Checking VM state"
-echo "=========================================="
-echo ""
-
-echo "--- Git log (last 5 commits) ---"
-git log --oneline -5
-echo ""
-
-echo "--- build_forward_translations.py (first 100 lines) ---"
-head -100 pipeline/build_forward_translations.py
-echo ""
-
-echo "--- Sample 3 entries from raw Wiktextract dump ---"
-python3 << 'DIAG_EOF'
-import gzip
-import json
-
-RAW_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
-
-print("Reading first 3 entries from raw-wiktextract-data.jsonl.gz...\n")
-
-with gzip.open(RAW_PATH, 'rt', encoding='utf-8') as f:
-    for i, line in enumerate(f):
-        if i >= 3:
-            break
-        try:
-            entry = json.loads(line.strip())
-            print(f"Entry {i+1}:")
-            print(f"  lang_code: {entry.get('lang_code', 'NOT PRESENT')}")
-            print(f"  lang: {entry.get('lang', 'NOT PRESENT')}")
-            print(f"  word: {entry.get('word', 'NOT PRESENT')}")
-            print(f"  has 'translations' field: {'translations' in entry}")
-            if 'translations' in entry:
-                trans = entry['translations']
-                print(f"  translations type: {type(trans).__name__}, count: {len(trans) if isinstance(trans, list) else 'N/A'}")
-                if isinstance(trans, list) and len(trans) > 0:
-                    print(f"  first translation item: {trans[0]}")
-            print(f"  all keys: {list(entry.keys())[:15]}...")
-            print("")
-        except Exception as e:
-            print(f"Entry {i+1}: ERROR parsing: {e}")
-            print("")
-DIAG_EOF
-
-echo ""
-
-###############################################################################
-# STEP 2: BUILD INLINE - Complete logic embedded in this script
-###############################################################################
-
-echo "=========================================="
-echo "STEP 2: BUILD - Inline Python build logic"
-echo "=========================================="
-echo ""
-
-python3 << 'BUILD_EOF'
+python3 << 'ANALYZE_EOF'
 import gzip
 import json
 import os
 import pickle
+from collections import Counter, defaultdict
 
 RAW_PATH = "/mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz"
 OUTPUT_PATH = "/mnt/pgdata/morphlex/data/forward_translations.pkl"
 TARGET_LANGUAGES = ['en', 'tr', 'de', 'la', 'zh', 'ja', 'he', 'sa', 'grc', 'ine-pro']
 
-def valid_script(lang, word):
-    """Check if word contains expected script characters."""
-    if lang == 'zh':
-        return any('\u4e00' <= c <= '\u9fff' for c in word)
-    elif lang == 'he':
-        return any('\u0590' <= c <= '\u05ff' for c in word)
-    elif lang == 'ja':
-        return any(('\u3040' <= c <= '\u30ff') or ('\u4e00' <= c <= '\u9fff') for c in word)
-    elif lang == 'sa':
-        return any('\u0900' <= c <= '\u097f' for c in word)
-    elif lang == 'grc':
-        return any(('\u0370' <= c <= '\u03ff') or ('\u1f00' <= c <= '\u1fff') for c in word)
-    elif lang == 'ar':
-        return any('\u0600' <= c <= '\u06ff' for c in word)
-    return True
-
-print("=== BUILDING FORWARD TRANSLATIONS (Arabic Anchor - INLINE) ===")
-print(f"Input: {RAW_PATH}")
-print(f"Output: {OUTPUT_PATH}")
-print(f"Target languages: {TARGET_LANGUAGES}")
+print("=" * 60)
+print("PHASE 1: DUMP STRUCTURE ANALYSIS (first 500K lines)")
+print("=" * 60)
 print("")
 
-# Result: {arabic_word: {lang_code: word}}
-forward_translations = {}
-
-line_count = 0
-english_entries = 0
-entries_with_arabic = 0
+# Counters for analysis
+entry_lang_codes = Counter()  # lang_code field of entries
+trans_lang_codes = Counter()  # lang_code/code field inside translations
 entries_with_translations = 0
-sample_english_entries = []  # For debugging if 0 results
-
-print("Streaming Wiktextract dump...")
-print("Looking for English entries (lang_code='en') with Arabic translations...")
-print("")
+arabic_related = []  # entries that mention Arabic somehow
+sample_entries_with_trans = []
 
 with gzip.open(RAW_PATH, 'rt', encoding='utf-8') as f:
-    for line in f:
-        line_count += 1
-
-        if line_count % 500000 == 0:
-            print(f"  {line_count:,} lines | {english_entries:,} English | {entries_with_translations:,} have translations | {entries_with_arabic:,} have Arabic")
+    for i, line in enumerate(f):
+        if i >= 500000:
+            break
 
         try:
             entry = json.loads(line.strip())
         except json.JSONDecodeError:
             continue
 
-        # Check lang_code field - could be 'en' for English entries
-        lang_code = entry.get('lang_code', '')
+        # Track entry-level lang_code
+        entry_lang = entry.get('lang_code', entry.get('lang', 'NONE'))
+        entry_lang_codes[entry_lang] += 1
 
-        # Only process English entries
-        if lang_code != 'en':
-            continue
-
-        english_entries += 1
-        english_word = entry.get('word', '').strip()
-        if not english_word:
-            continue
-
-        # Get translations
+        # Check translations
         translations = entry.get('translations', [])
-        if not translations or not isinstance(translations, list):
-            # Save sample English entries for debugging
-            if len(sample_english_entries) < 5:
-                sample_english_entries.append({
-                    'word': english_word,
-                    'keys': list(entry.keys()),
-                    'has_senses': 'senses' in entry
+        if translations and isinstance(translations, list):
+            entries_with_translations += 1
+
+            # Sample entries with translations
+            if len(sample_entries_with_trans) < 3:
+                sample_entries_with_trans.append({
+                    'word': entry.get('word', '?'),
+                    'lang_code': entry_lang,
+                    'translations': translations[:5]
                 })
-            continue
 
-        entries_with_translations += 1
+            for trans in translations:
+                if isinstance(trans, dict):
+                    # Track translation language codes
+                    trans_lang = trans.get('lang_code', trans.get('code', 'NONE'))
+                    trans_lang_codes[trans_lang] += 1
 
-        # Extract all translations: {lang_code: word}
-        all_trans = {}
-        for trans in translations:
-            if not isinstance(trans, dict):
-                continue
-            # Try both 'lang_code' and 'code' fields for the translation's language
-            trans_lang = trans.get('lang_code', trans.get('code', ''))
-            trans_word = trans.get('word', '').strip()
-            if not trans_lang or not trans_word or trans_word == '-':
-                continue
-            if not valid_script(trans_lang, trans_word):
-                continue
-            if trans_lang not in all_trans:
-                all_trans[trans_lang] = trans_word
+                    # Look for Arabic-related codes
+                    trans_word = trans.get('word', '')
+                    if trans_lang and ('ar' in trans_lang.lower() or 'arab' in trans_lang.lower()):
+                        if len(arabic_related) < 10:
+                            arabic_related.append({
+                                'en_word': entry.get('word', '?'),
+                                'trans_lang': trans_lang,
+                                'trans_word': trans_word,
+                                'trans_keys': list(trans.keys())
+                            })
+                    # Also check if word contains Arabic script
+                    elif any('\u0600' <= c <= '\u06ff' for c in trans_word):
+                        if len(arabic_related) < 10:
+                            arabic_related.append({
+                                'en_word': entry.get('word', '?'),
+                                'trans_lang': trans_lang,
+                                'trans_word': trans_word,
+                                'trans_keys': list(trans.keys())
+                            })
 
-        # Check if there's an Arabic translation
-        arabic_word = all_trans.get('ar')
-        if not arabic_word:
-            continue
-
-        if not valid_script('ar', arabic_word):
-            continue
-
-        entries_with_arabic += 1
-
-        # Initialize entry if needed
-        if arabic_word not in forward_translations:
-            forward_translations[arabic_word] = {}
-
-        # Add English word
-        if 'en' not in forward_translations[arabic_word]:
-            forward_translations[arabic_word]['en'] = english_word
-
-        # Add all other target language translations
-        for lang in TARGET_LANGUAGES:
-            if lang == 'en':
-                continue
-            if lang in all_trans and lang not in forward_translations[arabic_word]:
-                forward_translations[arabic_word][lang] = all_trans[lang]
-
-print("")
-print("=== BUILD RESULTS ===")
-print(f"Total lines processed: {line_count:,}")
-print(f"English entries found: {english_entries:,}")
-print(f"English entries with translations field: {entries_with_translations:,}")
-print(f"English entries with Arabic translation: {entries_with_arabic:,}")
-print(f"Unique Arabic words collected: {len(forward_translations):,}")
+print(f"Analyzed: 500,000 lines")
+print(f"Entries with 'translations' field: {entries_with_translations:,}")
 print("")
 
-# If 0 results, show sample English entries
-if entries_with_arabic == 0:
-    print("=== DEBUG: 0 Arabic translations found ===")
+print("--- Entry-level lang_code distribution (top 10) ---")
+for lang, count in entry_lang_codes.most_common(10):
+    print(f"  {lang}: {count:,}")
+print("")
+
+print("--- Translation lang_code distribution (top 30) ---")
+for lang, count in trans_lang_codes.most_common(30):
+    print(f"  {lang}: {count:,}")
+print("")
+
+print("--- Sample entries with translations ---")
+for i, s in enumerate(sample_entries_with_trans, 1):
+    print(f"Sample {i}: '{s['word']}' (entry lang_code: {s['lang_code']})")
+    for t in s['translations'][:3]:
+        if isinstance(t, dict):
+            print(f"  -> {t.get('lang_code', t.get('code', '?'))}: {t.get('word', '?')}")
     print("")
-    if sample_english_entries:
-        print("Sample English entries (showing their structure):")
-        for i, s in enumerate(sample_english_entries, 1):
-            print(f"  {i}. word: {s['word']}")
-            print(f"     keys: {s['keys']}")
-            print(f"     has_senses: {s['has_senses']}")
-        print("")
 
-    # Show a sample entry with translations if any exist
-    print("Looking for ANY entry with 'translations' field in first 100K lines...")
+print("--- Arabic-related translations found ---")
+if arabic_related:
+    for ar in arabic_related[:5]:
+        print(f"  English '{ar['en_word']}' -> lang={ar['trans_lang']}, word={ar['trans_word']}")
+        print(f"    translation keys: {ar['trans_keys']}")
+else:
+    print("  NONE FOUND in first 500K lines")
+print("")
+
+# Check specifically for 'ar' translations
+ar_count = trans_lang_codes.get('ar', 0)
+print(f"Translations with lang_code='ar': {ar_count:,}")
+print("")
+
+###############################################################################
+# PHASE 2: If 'ar' exists, build the Arabic→X index
+###############################################################################
+
+if ar_count > 0:
+    print("=" * 60)
+    print("PHASE 2: BUILDING ARABIC->X FORWARD TRANSLATIONS")
+    print("=" * 60)
+    print("")
+
+    def valid_script(lang, word):
+        if lang == 'zh':
+            return any('\u4e00' <= c <= '\u9fff' for c in word)
+        elif lang == 'he':
+            return any('\u0590' <= c <= '\u05ff' for c in word)
+        elif lang == 'ja':
+            return any(('\u3040' <= c <= '\u30ff') or ('\u4e00' <= c <= '\u9fff') for c in word)
+        elif lang == 'sa':
+            return any('\u0900' <= c <= '\u097f' for c in word)
+        elif lang == 'grc':
+            return any(('\u0370' <= c <= '\u03ff') or ('\u1f00' <= c <= '\u1fff') for c in word)
+        elif lang == 'ar':
+            return any('\u0600' <= c <= '\u06ff' for c in word)
+        return True
+
+    forward_translations = {}
+    line_count = 0
+    english_entries = 0
+    entries_with_arabic = 0
+
+    print("Full scan: Looking for English entries with Arabic translations...")
+    print("")
+
     with gzip.open(RAW_PATH, 'rt', encoding='utf-8') as f:
-        found_trans = None
-        for i, line in enumerate(f):
-            if i >= 100000:
-                break
+        for line in f:
+            line_count += 1
+
+            if line_count % 500000 == 0:
+                print(f"  {line_count:,} lines | {english_entries:,} English entries | {entries_with_arabic:,} with Arabic")
+
             try:
                 entry = json.loads(line.strip())
-                if entry.get('translations'):
-                    found_trans = entry
-                    break
-            except:
-                pass
+            except json.JSONDecodeError:
+                continue
 
-        if found_trans:
-            print(f"Found entry with translations at line {i+1}:")
-            print(f"  word: {found_trans.get('word')}")
-            print(f"  lang_code: {found_trans.get('lang_code')}")
-            print(f"  translations count: {len(found_trans.get('translations', []))}")
-            print(f"  first 3 translations:")
-            for t in found_trans.get('translations', [])[:3]:
-                print(f"    {t}")
-        else:
-            print("NO entries with 'translations' field found in first 100K lines!")
-            print("The dump may not have translation data.")
-else:
-    # Per-language stats
-    print("=== PER-LANGUAGE COVERAGE ===")
-    lang_counts = {lang: 0 for lang in TARGET_LANGUAGES}
-    for word_trans in forward_translations.values():
-        for lang in word_trans:
-            if lang in lang_counts:
-                lang_counts[lang] += 1
+            # Only English entries
+            if entry.get('lang_code') != 'en':
+                continue
 
-    for lang in TARGET_LANGUAGES:
-        print(f"  {lang}: {lang_counts[lang]:,} entries")
+            english_entries += 1
+            english_word = entry.get('word', '').strip()
+            if not english_word:
+                continue
+
+            translations = entry.get('translations', [])
+            if not translations or not isinstance(translations, list):
+                continue
+
+            # Extract all translations
+            all_trans = {}
+            for trans in translations:
+                if not isinstance(trans, dict):
+                    continue
+                trans_lang = trans.get('lang_code', trans.get('code', ''))
+                trans_word = trans.get('word', '').strip()
+                if not trans_lang or not trans_word or trans_word == '-':
+                    continue
+                if not valid_script(trans_lang, trans_word):
+                    continue
+                if trans_lang not in all_trans:
+                    all_trans[trans_lang] = trans_word
+
+            arabic_word = all_trans.get('ar')
+            if not arabic_word:
+                continue
+
+            if not valid_script('ar', arabic_word):
+                continue
+
+            entries_with_arabic += 1
+
+            if arabic_word not in forward_translations:
+                forward_translations[arabic_word] = {}
+
+            if 'en' not in forward_translations[arabic_word]:
+                forward_translations[arabic_word]['en'] = english_word
+
+            for lang in TARGET_LANGUAGES:
+                if lang == 'en':
+                    continue
+                if lang in all_trans and lang not in forward_translations[arabic_word]:
+                    forward_translations[arabic_word][lang] = all_trans[lang]
+
+    print("")
+    print("=" * 60)
+    print("BUILD RESULTS")
+    print("=" * 60)
+    print(f"Total lines: {line_count:,}")
+    print(f"English entries: {english_entries:,}")
+    print(f"English entries with Arabic translation: {entries_with_arabic:,}")
+    print(f"Unique Arabic words: {len(forward_translations):,}")
     print("")
 
-    # Save
-    print(f"Saving to {OUTPUT_PATH}...")
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, 'wb') as f:
-        pickle.dump(forward_translations, f)
+    if forward_translations:
+        print("--- Per-language coverage ---")
+        lang_counts = {lang: 0 for lang in TARGET_LANGUAGES}
+        for word_trans in forward_translations.values():
+            for lang in word_trans:
+                if lang in lang_counts:
+                    lang_counts[lang] += 1
 
-    file_size = os.path.getsize(OUTPUT_PATH)
-    if file_size >= 1024 * 1024:
-        print(f"Saved: {file_size / (1024 * 1024):.2f} MB")
+        for lang in TARGET_LANGUAGES:
+            print(f"  {lang}: {lang_counts[lang]:,}")
+        print("")
+
+        # Save
+        print(f"Saving to {OUTPUT_PATH}...")
+        os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+        with open(OUTPUT_PATH, 'wb') as f:
+            pickle.dump(forward_translations, f)
+
+        file_size = os.path.getsize(OUTPUT_PATH)
+        if file_size >= 1024 * 1024:
+            print(f"SUCCESS: Saved {file_size / (1024*1024):.2f} MB")
+        else:
+            print(f"SUCCESS: Saved {file_size / 1024:.2f} KB")
+
+        # Show sample entries
+        print("")
+        print("--- Sample Arabic->X entries ---")
+        for ar_word in list(forward_translations.keys())[:5]:
+            print(f"  {ar_word}: {forward_translations[ar_word]}")
     else:
-        print(f"Saved: {file_size / 1024:.2f} KB")
-    print(f"Total bytes: {file_size}")
-
-BUILD_EOF
-
-echo ""
-
-###############################################################################
-# STEP 3: REPORT - Final summary
-###############################################################################
-
-echo "=========================================="
-echo "STEP 3: REPORT - Final Summary"
-echo "=========================================="
-echo ""
-
-if [ -f "data/forward_translations.pkl" ]; then
-    FILE_SIZE=$(stat -c%s "data/forward_translations.pkl")
-    echo "forward_translations.pkl exists: $FILE_SIZE bytes"
-else
-    echo "forward_translations.pkl NOT FOUND"
-fi
+        print("ERROR: No Arabic translations found even though analysis showed they exist!")
+else:
+    print("=" * 60)
+    print("ANALYSIS CONCLUSION")
+    print("=" * 60)
+    print("The Wiktextract dump does NOT contain Arabic translations (lang_code='ar').")
+    print("")
+    print("Possible reasons:")
+    print("1. Arabic uses a different language code")
+    print("2. This is a limited/filtered dump")
+    print("3. Arabic translations are in a different field")
+    print("")
+    print("Available translation language codes that might be Arabic:")
+    for code, count in trans_lang_codes.most_common(50):
+        if any(c for c in code if '\u0600' <= c <= '\u06ff') or 'ar' in code.lower():
+            print(f"  {code}: {count:,}")
+ANALYZE_EOF
 
 echo ""
 echo "End: $(date -Iseconds)"
