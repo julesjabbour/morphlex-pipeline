@@ -65,6 +65,11 @@ def _extract_hebrew_root(word: str, etymology_links: list) -> str:
     Extract Hebrew root from wiktextract_roots.pkl or etymology data.
 
     Hebrew uses a triconsonantal root system similar to Arabic.
+
+    COVERAGE NOTE: Wiktextract {{root|he|...}} has only 7 entries total.
+    Hebrew triconsonantal root extraction needs a dedicated morphological tool
+    that we don't have yet. For now, this function will return empty in most cases.
+    This is EXPECTED behavior - see Phase 4 decision gate.
     """
     global _normalized_lookup
     roots_index = _load_roots_index()
@@ -89,7 +94,8 @@ def _extract_hebrew_root(word: str, etymology_links: list) -> str:
             if source_word and not source_word.startswith('*') and not any(c in source_word for c in ['ḱ', 'ǵ', 'ʰ', 'ʷ', '₂', '₃']):
                 return source_word
 
-    # No root found - return empty string (not the normalized word)
+    # No root found - return empty string
+    # EXPECTED: Hebrew roots empty — awaiting dedicated tool (coverage 0.07%)
     return ''
 
 

@@ -49,12 +49,25 @@ def _find_cedict_path() -> str:
 
 def _load_cedict():
     """Load and parse CC-CEDICT dictionary."""
-    global _cedict
+    global _cedict, _CEDICT_PATH
     if _cedict is not None:
         return _cedict
 
     _cedict = {}
-    with open(_CEDICT_PATH, 'r', encoding='utf-8') as f:
+
+    # Find CEDICT path if default doesn't exist
+    cedict_path = _CEDICT_PATH
+    if not os.path.exists(cedict_path):
+        try:
+            cedict_path = _find_cedict_path()
+            _CEDICT_PATH = cedict_path
+        except FileNotFoundError as e:
+            print(f"WARNING: {e}")
+            return _cedict
+    else:
+        print(f"CEDICT loading from: {cedict_path}")
+
+    with open(cedict_path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             # Skip comments and empty lines

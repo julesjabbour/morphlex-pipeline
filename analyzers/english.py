@@ -37,6 +37,7 @@ def _load_morpholex_data() -> dict:
     _morpholex_cache = {}
 
     if not _MORPHOLEX_PATH.exists():
+        print(f"WARNING: MorphoLex directory not found at {_MORPHOLEX_PATH} - using spaCy fallback")
         return _morpholex_cache
 
     # Find all xlsx files
