@@ -1,259 +1,220 @@
-"""Sanskrit morphological analyzer using Wiktextract data.
+"""Sanskrit morphological analyzer using Vidyut.
 
-Uses reverse lookup from Sanskrit words to English concepts via precomputed index.
-Sanskrit is a major source language for PIE etymologies.
+Uses Ambuda's Vidyut library for morphological analysis of Sanskrit words.
+Vidyut provides comprehensive Sanskrit morphological data including:
+- 45,000+ dhatu (verbal root) entries
+- 1.5 million+ pratipadika (nominal stem) entries
 
-DATA GAP STATUS (2026-04-08):
-The wiktextract_roots.pkl has 1,044 Sanskrit entries, but these are morphological
-roots (dhatu) for specific Wiktionary entries (e.g., 'बुद्ध' -> 'बुध्' meaning Buddha -> root).
-The forward_translations.pkl provides everyday vocabulary words (e.g., 'हृदय' heart,
-'हस्त' hand) which are NOT the same words as the PKL entries.
-
-This is a DATA GAP like Hebrew, not a fixable lookup mismatch:
-- PKL has: morphological roots for derived/compound words from Wiktionary
-- Forward translations provide: basic vocabulary words
-- These are DIFFERENT words, not different forms of the same words
-
-The adapter will return empty roots for most words until a dedicated Sanskrit
-morphological analyzer (like Sanskrit Heritage or DCS) is integrated.
+NO HARDCODED ROOTS. NO RULE-BASED FALLBACK.
+All analysis comes from Vidyut's morphological database.
 """
 
 import os
-import pickle
+import re
 from typing import Optional
 
-from pipeline.wiktextract_loader import load_index
+# Module-level cache
+_kosha: Optional[object] = None
+_vidyut_available: Optional[bool] = None
+_sanscript: Optional[object] = None
+
+VIDYUT_DATA_PATH = '/mnt/pgdata/morphlex/data/vidyut_data/kosha'
 
 
-# Module-level cache for loaded index
-_sanskrit_index: Optional[dict] = None
-_roots_index: Optional[dict] = None
-_normalized_lookup: Optional[dict] = None  # {normalized_key: original_key}
+def _init_vidyut():
+    """Initialize Vidyut Kosha on first use."""
+    global _kosha, _vidyut_available, _sanscript
 
-ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
+    if _vidyut_available is not None:
+        return _vidyut_available
 
+    try:
+        from vidyut import kosha
+        from indic_transliteration import sanscript
+        _sanscript = sanscript
 
-def _load_roots_index():
-    """Load wiktextract_roots.pkl and return Sanskrit roots with normalized lookup."""
-    global _roots_index, _normalized_lookup
-    if _roots_index is None:
-        if os.path.exists(ROOTS_PKL_PATH):
-            with open(ROOTS_PKL_PATH, 'rb') as f:
-                all_roots = pickle.load(f)
-            _roots_index = all_roots.get('sa', {})
-            # Build normalized lookup table for efficient matching
-            # PKL keys may have diacritics, translations may not
-            _normalized_lookup = {}
-            for sanskrit_word in _roots_index:
-                norm = _normalize_sanskrit(sanskrit_word)
-                if norm not in _normalized_lookup:
-                    _normalized_lookup[norm] = sanskrit_word
-        else:
-            _roots_index = {}
-            _normalized_lookup = {}
-    return _roots_index
+        # Check if data directory exists
+        if not os.path.exists(VIDYUT_DATA_PATH):
+            print(f"[DEBUG] Vidyut data not found at {VIDYUT_DATA_PATH}")
+            print("[DEBUG] Run vidyut.download_data() to download data")
+            _vidyut_available = False
+            return False
 
+        _kosha = kosha.Kosha(VIDYUT_DATA_PATH)
+        _vidyut_available = True
+        print(f"[DEBUG] Vidyut Kosha initialized from {VIDYUT_DATA_PATH}")
+        return True
 
-def _load_sanskrit_data() -> None:
-    """Load precomputed Sanskrit reverse lookup index on first call."""
-    global _sanskrit_index
-
-    if _sanskrit_index is not None:
-        return
-
-    _sanskrit_index = load_index('sa')
+    except ImportError as e:
+        print(f"[DEBUG] Vidyut import failed: {e}")
+        print("[DEBUG] Install with: pip install vidyut indic-transliteration")
+        _vidyut_available = False
+        return False
+    except Exception as e:
+        print(f"[DEBUG] Vidyut initialization error: {type(e).__name__}: {e}")
+        _vidyut_available = False
+        return False
 
 
-def _normalize_sanskrit(word: str) -> str:
-    """Normalize Sanskrit word for matching (remove combining marks)."""
-    import unicodedata
-    # Remove combining marks but keep base characters
-    normalized = ''.join(
-        c for c in unicodedata.normalize('NFD', word)
-        if unicodedata.category(c) != 'Mn'
-    )
-    return normalized.strip()
-
-
-def _extract_sanskrit_stems(word: str) -> list:
+def _extract_root_vidyut(word: str) -> tuple[str, str, str]:
     """
-    Extract potential stems from a Sanskrit word by stripping common endings.
+    Extract root/stem from a Sanskrit word using Vidyut.
 
-    Sanskrit verb endings: -ति, -नि, -सि, -मि, -न्ति, -थ, -ध्वम्, -ते, etc.
-    Sanskrit noun endings: -म्, -ः, -आ, -अम्, -एन, -आय, -आत्, etc.
+    Args:
+        word: Sanskrit word in Devanagari script
 
-    Returns list of possible stems (longer stems first).
+    Returns:
+        Tuple of (root_slp1, root_devanagari, root_type)
+        root_type is either 'dhatu' (verbal root) or 'pratipadika' (nominal stem)
+        Returns (None, None, None) if no analysis found.
     """
-    stems = []
+    if not _init_vidyut() or _kosha is None or _sanscript is None:
+        return None, None, None
 
-    # Common verb endings (present tense, etc.)
-    verb_endings = ['न्ति', 'ति', 'नि', 'सि', 'मि', 'थ', 'ध्वम्', 'ते', 'न्ते', 'से', 'वहे', 'महे']
-    # Common noun/adjective endings
-    noun_endings = ['म्', 'ः', 'आ', 'अम्', 'एन', 'आय', 'आत्', 'स्य', 'ई', 'ऊ', 'औ', 'अः', 'आः', 'इ', 'उ']
+    # Transliterate Devanagari to SLP1 (internal format used by Vidyut)
+    try:
+        slp1 = _sanscript.transliterate(word, _sanscript.DEVANAGARI, _sanscript.SLP1)
+    except Exception as e:
+        print(f"[DEBUG] Transliteration error for '{word}': {e}")
+        return None, None, None
 
-    all_endings = verb_endings + noun_endings
+    # Get morphological analyses from Vidyut
+    try:
+        entries = _kosha.get(slp1)
+    except Exception as e:
+        print(f"[DEBUG] Kosha lookup error for '{word}' (slp1: {slp1}): {e}")
+        return None, None, None
 
-    for ending in all_endings:
-        if word.endswith(ending) and len(word) > len(ending):
-            stem = word[:-len(ending)]
-            if len(stem) >= 2 and stem not in stems:  # At least 2 chars
-                stems.append(stem)
+    if not entries:
+        return None, None, None
 
-    return stems
+    # Find the best entry - prefer Basic pratipadika over derived forms
+    best_entry = None
+    for entry in entries:
+        entry_str = str(entry)
+        if "PratipadikaEntry.Basic" in entry_str:
+            best_entry = entry
+            break
 
+    if best_entry is None:
+        best_entry = entries[0]
 
-def _extract_sanskrit_root(word: str, etymology_links: list) -> str:
-    """
-    Extract Sanskrit root (dhatu) from wiktextract_roots.pkl or etymology data.
+    entry_str = str(best_entry)
 
-    Sanskrit uses a root (dhatu) system. The adapter receives translated words
-    (inflected forms like लिखति "writes") but PKL has base forms/lemmas.
-    We try: direct lookup -> normalized lookup -> stem-based lookup.
-    """
-    global _normalized_lookup
-    # First, try direct lookup in wiktextract_roots.pkl
-    roots_index = _load_roots_index()
-    if word in roots_index and roots_index[word]:
-        return roots_index[word][0]  # Return first root
+    # Extract pratipadika (nominal stem) for basic words - prefer this
+    if "PratipadikaEntry.Basic" in entry_str:
+        match = re.search(r"text='([^']+)'", entry_str)
+        if match:
+            stem_slp1 = match.group(1)
+            stem_deva = _sanscript.transliterate(stem_slp1, _sanscript.SLP1, _sanscript.DEVANAGARI)
+            return stem_slp1, stem_deva, 'pratipadika'
 
-    # Try normalized lookup via precomputed table (O(1) instead of O(n))
-    # PKL keys may have diacritics, translations may not
-    word_normalized = _normalize_sanskrit(word)
-    if _normalized_lookup and word_normalized in _normalized_lookup:
-        original_key = _normalized_lookup[word_normalized]
-        if roots_index.get(original_key):
-            return roots_index[original_key][0]
+    # Extract dhatu if it's a derived form (krdanta)
+    if 'dhatu_entry=DhatuEntry' in entry_str:
+        match = re.search(r"aupadeshika='([^']+)'", entry_str)
+        if match:
+            # Remove anubandha markers (~ and ^)
+            dhatu_slp1 = match.group(1).replace('~', '').replace('^', '')
+            dhatu_deva = _sanscript.transliterate(dhatu_slp1, _sanscript.SLP1, _sanscript.DEVANAGARI)
+            return dhatu_slp1, dhatu_deva, 'dhatu'
 
-    # Try stem-based lookup (strip common verb/noun endings)
-    # Translated words are often inflected forms; PKL has base forms
-    stems = _extract_sanskrit_stems(word)
-    for stem in stems:
-        # Direct stem lookup
-        if stem in roots_index and roots_index[stem]:
-            return roots_index[stem][0]
-        # Normalized stem lookup
-        stem_normalized = _normalize_sanskrit(stem)
-        if _normalized_lookup and stem_normalized in _normalized_lookup:
-            original_key = _normalized_lookup[stem_normalized]
-            if roots_index.get(original_key):
-                return roots_index[original_key][0]
-
-    # Fallback: Look for root info in etymology
-    for link in etymology_links:
-        if link.get('type') == 'root':
-            source_word = link.get('source_word', '')
-            # Filter out PIE reconstructions (they start with * or contain PIE-specific chars)
-            if source_word and not source_word.startswith('*') and not any(c in source_word for c in ['ḱ', 'ǵ', 'ʰ', 'ʷ', '₂', '₃']):
-                return source_word
-
-    # No root found - return empty string (not the normalized word)
-    return ''
-
-
-def _classify_sanskrit_morph_type(word: str, etymology_links: list) -> str:
-    """
-    Classify Sanskrit morphological type.
-
-    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, OTHER, UNKNOWN
-    """
-    has_root_etym = any(l.get('type') == 'root' for l in etymology_links)
-    has_derivation_etym = any(l.get('type') in ('der', 'inh') for l in etymology_links)
-
-    if has_root_etym and has_derivation_etym:
-        return 'DERIVATION'
-    elif has_root_etym:
-        return 'ROOT'
-    elif has_derivation_etym:
-        return 'DERIVATION'
-    else:
-        return 'UNKNOWN'
+    return None, None, None
 
 
 def analyze_sanskrit(word: str) -> list[dict]:
     """
     Analyze a Sanskrit word and return morphological analyses.
 
-    Uses Wiktextract data via reverse lookup: finds English entries
-    that have the given Sanskrit word as a translation.
-
-    Handles both Devanagari input and romanized/transliterated input.
+    Uses Vidyut's Kosha for morphological analysis.
+    NO HARDCODED ROOTS. NO RULE-BASED FALLBACK.
 
     Args:
-        word: Sanskrit word to analyze (Devanagari or transliterated)
+        word: Sanskrit word to analyze (Devanagari script)
 
     Returns:
         List of dicts matching the lexicon.entries schema columns
     """
-    _load_sanskrit_data()
-
     results = []
 
-    # Normalize input for matching
-    word_normalized = _normalize_sanskrit(word)
+    # Get root using Vidyut
+    root_slp1, root_deva, root_type = _extract_root_vidyut(word)
 
-    # Direct lookup in Sanskrit index
-    matches = _sanskrit_index.get(word, [])
-
-    # If no direct match, try normalized version
-    if not matches and word_normalized != word:
-        matches = _sanskrit_index.get(word_normalized, [])
-
-    # If still no match, search through index for partial/normalized matches
-    if not matches:
-        for sanskrit_word, entries in _sanskrit_index.items():
-            if _normalize_sanskrit(sanskrit_word) == word_normalized:
-                matches.extend(entries)
-                break
-
-    # Convert matches to result format
-    for match in matches:
-        # Build etymology links from Wiktextract data
-        # Sanskrit is a major source language for PIE etymologies
-        etymology_links = []
-        for etym in match.get('etymology', []):
-            etym_name = etym.get('name', '')
-            etym_args = etym.get('args', {})
-            if etym_name in ('inh', 'bor', 'der', 'cog', 'etymon', 'root'):
-                # Extract source language and word from etymology template
-                source_lang = etym_args.get('2', '')
-                source_word = etym_args.get('3', '')
-                if source_lang and source_word:
-                    etymology_links.append({
-                        'type': etym_name,
-                        'source_language': source_lang,
-                        'source_word': source_word
-                    })
-
-        # Extract root and classify morph type
-        root = _extract_sanskrit_root(word, etymology_links)
-        morph_type = _classify_sanskrit_morph_type(word, etymology_links)
-
+    if root_slp1:
         result = {
             'language_code': 'sa',
             'word_native': word,
-            'word_translit': None,  # Could add transliteration if available
-            'lemma': word,
-            'root': root,
-            'pos': match.get('pos', ''),
-            'morph_type': morph_type,
-            'derived_from_root': root if morph_type == 'DERIVATION' else None,
-            'derivation_mode': None,
+            'word_translit': None,
+            'lemma': root_deva,
+            'root': root_deva,
+            'pos': 'noun' if root_type == 'pratipadika' else 'verb',
+            'morph_type': 'ROOT' if root_type == 'dhatu' else 'PRATIPADIKA',
+            'derived_from_root': root_deva if root_type == 'dhatu' else None,
+            'derivation_mode': 'krdanta' if root_type == 'dhatu' else None,
             'compound_components': None,
             'morphological_features': {
-                'english_gloss': match.get('english_word', ''),
-                'definitions': match.get('definitions', [])[:3],  # First 3 definitions
-                'etymology_links': etymology_links if etymology_links else None,
-                'etymology_text': match.get('etymology_text', '') or None
+                'root_type': root_type,
+                'root_slp1': root_slp1,
             },
-            'source_tool': 'wiktextract'
+            'confidence': 0.9,
+            'source_tool': 'vidyut'
         }
         results.append(result)
 
-    # Calculate confidence based on number of analyses
-    total_analyses = len(results)
-    if total_analyses > 0:
-        confidence = 1.0 / total_analyses
-        for r in results:
-            r['confidence'] = confidence
-
     return results
+
+
+if __name__ == '__main__':
+    # Test with 20 random Sanskrit words
+    test_words = [
+        'पुस्तक',   # book
+        'नदी',      # river
+        'वायु',     # wind
+        'अग्नि',    # fire
+        'पर्वत',    # mountain
+        'सूर्य',    # sun
+        'चन्द्र',   # moon
+        'वृक्ष',    # tree
+        'पुष्प',    # flower
+        'जल',       # water
+        'पृथ्वी',   # earth
+        'आकाश',     # sky
+        'मार्ग',    # path
+        'नगर',      # city
+        'राजा',     # king
+        'देव',      # god
+        'कन्या',    # daughter
+        'पुत्र',    # son
+        'गुरु',     # teacher
+        'शिष्य',    # student
+    ]
+
+    print("=== SANSKRIT ROOT EXTRACTION TEST (VIDYUT - NO HARDCODING) ===\n")
+
+    # Check Vidyut availability
+    vidyut_ok = _init_vidyut()
+    print(f"Vidyut available: {vidyut_ok}")
+    if not vidyut_ok:
+        print(f"Data path: {VIDYUT_DATA_PATH}")
+        print("Install: pip install vidyut indic-transliteration")
+        print("Download data: import vidyut; vidyut.download_data('/mnt/pgdata/morphlex/data/vidyut_data')")
+    print()
+
+    found = 0
+    empty = 0
+
+    print(f"{'Word':<12} {'Root':<12} {'Type':<12} {'Source'}")
+    print("-" * 50)
+
+    for word in test_words:
+        results = analyze_sanskrit(word)
+        if results and results[0].get('root'):
+            r = results[0]
+            root_type = r['morphological_features'].get('root_type', 'unknown')
+            print(f"{word:<12} {r['root']:<12} {root_type:<12} {r['source_tool']}")
+            found += 1
+        else:
+            print(f"{word:<12} NO ROOT FOUND")
+            empty += 1
+
+    print("-" * 50)
+    print(f"\n=== RESULTS: {found} roots found, {empty} empty ===")
