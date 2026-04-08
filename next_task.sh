@@ -1,9 +1,9 @@
 #!/bin/bash
-# Task: Bug Fix Verification Round 2 - Greek missing langs + Hebrew empty lookup
-# Problem 1: Bug 1 fix broke extraction - Greek/en/de/tr/la/zh/ja now missing
-# Problem 2: Hebrew adapter can't find roots (763 in pkl, 0 found in test)
-# Fixes: extract_wiktextract_roots.py (index by entry lang, filter PIE for he/sa/ar)
-#        hebrew.py, greek.py (normalized lookups)
+# Task: Bug Fix Verification Round 3 - Hebrew/Arabic extraction + Greek PIE filter
+# Bug 2a partial: Greek finding roots but PIE reconstructions leak (*wed-, *h₂ew-...)
+# Bug 2b FAIL: Hebrew dropped from 763 to 0, Arabic from 15,886 to 1
+# Fixes: extract_wiktextract_roots.py (only filter ine-pro, not require exact lang match)
+#        greek.py (add PIE reconstruction filter)
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 echo "=== BUG FIX VERIFICATION TESTS ==="
@@ -78,10 +78,17 @@ print()
 latin_errors = []
 hebrew_pie_roots = []
 sanskrit_pie_roots = []
+greek_pie_roots = []
 greek_empty = 0
 greek_found = 0
 hebrew_empty = 0
 hebrew_found = 0
+
+def is_pie_root(root):
+    """Check if a root is a PIE reconstruction."""
+    if not root:
+        return False
+    return root.startswith('*') or any(c in root for c in ['ḱ', 'ǵ', 'ʰ', 'ʷ', '₂', '₃'])
 
 total_results = 0
 for ar_word in arabic_words:
@@ -108,16 +115,18 @@ for ar_word in arabic_words:
 
             # Track bug indicators
             if lang == 'he':
-                if sample_root.startswith('*'):
+                if is_pie_root(sample_root):
                     hebrew_pie_roots.append((ar_word, sample_root))
                 elif sample_root:
                     hebrew_found += 1
                 else:
                     hebrew_empty += 1
-            if lang == 'sa' and sample_root.startswith('*'):
+            if lang == 'sa' and is_pie_root(sample_root):
                 sanskrit_pie_roots.append((ar_word, sample_root))
             if lang == 'grc':
-                if sample_root:
+                if is_pie_root(sample_root):
+                    greek_pie_roots.append((ar_word, sample_root))
+                elif sample_root:
                     greek_found += 1
                 else:
                     greek_empty += 1
@@ -156,16 +165,31 @@ else:
     print("  PASS: Sanskrit roots are NOT PIE reconstructions")
 print()
 
-print("Bug 2a - Greek empty roots:")
-print(f"  Found: {greek_found}, Empty: {greek_empty}")
-if greek_found > 0:
-    print("  PASS: Greek adapter is finding roots from wiktextract_roots.pkl")
+print("Bug 2a - Greek PIE filter + empty roots:")
+print(f"  Found: {greek_found}, Empty: {greek_empty}, PIE leaks: {len(greek_pie_roots)}")
+if greek_pie_roots:
+    print(f"  FAIL: Greek still has {len(greek_pie_roots)} PIE roots:")
+    for word, root in greek_pie_roots[:3]:
+        print(f"    {word}: {root}")
+elif greek_found > 0:
+    print("  PASS: Greek adapter filters PIE and finds native roots")
 else:
     print("  FAIL: Greek adapter still returns empty roots")
 print()
 
-print("Bug 2b - Hebrew empty roots (lookup key mismatch):")
-print(f"  Found: {hebrew_found}, Empty: {hebrew_empty}")
+print("Bug 2b - Hebrew/Arabic extraction regression:")
+# Load pkl to verify extraction counts
+with open('data/wiktextract_roots.pkl', 'rb') as f:
+    roots_pkl = pickle.load(f)
+ar_count = len(roots_pkl.get('ar', {}))
+he_count = len(roots_pkl.get('he', {}))
+grc_count = len(roots_pkl.get('grc', {}))
+print(f"  PKL counts: ar={ar_count}, he={he_count}, grc={grc_count}")
+if ar_count > 1000 and he_count > 100:
+    print("  PASS: Hebrew/Arabic extraction restored")
+else:
+    print(f"  FAIL: Arabic should be ~15k (got {ar_count}), Hebrew should be ~700+ (got {he_count})")
+print(f"  Adapter found: {hebrew_found}, Empty: {hebrew_empty}")
 if hebrew_found > 0:
     print("  PASS: Hebrew adapter is finding roots from wiktextract_roots.pkl")
 else:

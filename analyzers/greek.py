@@ -43,21 +43,35 @@ def _extract_greek_root(word: str, concept: dict) -> str:
     """
     roots_index = _load_roots_index()
 
+    def is_pie_reconstruction(root_str):
+        """Check if root is a PIE reconstruction (starts with * or has PIE chars)."""
+        if not root_str:
+            return False
+        return root_str.startswith('*') or any(c in root_str for c in ['ḱ', 'ǵ', 'ʰ', 'ʷ', '₂', '₃'])
+
     # Try direct lookup
     if word in roots_index and roots_index[word]:
-        return roots_index[word][0]
+        root = roots_index[word][0]
+        if not is_pie_reconstruction(root):
+            return root
 
     # Try normalized lookup
     word_normalized = _normalize_greek(word)
     for greek_word, root_list in roots_index.items():
         if root_list and _normalize_greek(greek_word) == word_normalized:
-            return root_list[0]
+            root = root_list[0]
+            if not is_pie_reconstruction(root):
+                return root
 
     # Fallback: Try to get root from etymology_templates if available
     etymology = concept.get('etymology_templates', []) if isinstance(concept, dict) else []
     for etym in etymology:
         if isinstance(etym, dict) and etym.get('name') == 'root':
             args = etym.get('args', {})
+            # Skip PIE root templates (source_lang in args['2'])
+            source_lang = args.get('2', '')
+            if source_lang == 'ine-pro':
+                continue
             # Extract root parts from positions 3+
             root_parts = []
             for i in range(3, 10):
@@ -65,7 +79,9 @@ def _extract_greek_root(word: str, concept: dict) -> str:
                 if root_val and root_val != '-':
                     root_parts.append(root_val)
             if root_parts:
-                return '-'.join(root_parts)
+                root_str = '-'.join(root_parts)
+                if not is_pie_reconstruction(root_str):
+                    return root_str
 
     # No root found - return empty string (not the word itself)
     return ''

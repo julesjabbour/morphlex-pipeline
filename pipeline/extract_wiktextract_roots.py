@@ -24,9 +24,9 @@ OUTPUT_FILE = os.path.join(DATA_DIR, 'wiktextract_roots.pkl')
 # Languages we care about (entry languages)
 TARGET_LANGUAGES = {'he', 'sa', 'grc', 'ar', 'la', 'en', 'de', 'tr', 'zh', 'ja', 'ine-pro'}
 
-# Languages where we ONLY want native roots (filter out PIE reconstructions)
-# For these languages, source_lang in template must match entry lang_code
-NATIVE_ROOT_ONLY = {'he', 'sa', 'ar'}
+# Languages where we want to filter out PIE reconstructions
+# For these languages, exclude roots where source_lang is 'ine-pro'
+FILTER_PIE_ROOTS = {'he', 'sa', 'ar', 'grc'}
 
 
 def extract_roots():
@@ -87,11 +87,12 @@ def extract_roots():
 
                 source_lang = args.get('2', '').strip()
 
-                # For Hebrew/Sanskrit/Arabic: ONLY keep native roots (no PIE)
+                # For Hebrew/Sanskrit/Arabic/Greek: filter out PIE reconstructions
                 # This fixes Bug 1 where Hebrew roots showed *ḱerd- instead of consonantal roots
-                if lang_code in NATIVE_ROOT_ONLY:
-                    if source_lang != lang_code:
-                        continue  # Skip PIE/other language roots for these languages
+                # And Bug 2a where Greek roots showed *wed- instead of Greek roots
+                if lang_code in FILTER_PIE_ROOTS:
+                    if source_lang == 'ine-pro':
+                        continue  # Skip PIE roots for these languages
 
                 # Extract roots from position 3 onwards
                 root_parts = []
