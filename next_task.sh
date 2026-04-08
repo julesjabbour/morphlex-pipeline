@@ -1,43 +1,61 @@
 #!/bin/bash
-# Greek root extraction fix and Sanskrit data gap documentation
-# Changes in this commit:
-# 1. Greek adapter REWRITTEN - added debug output, multiple parsing strategies, lemma as fallback
-# 2. Sanskrit documented as DATA GAP (like Hebrew) - PKL has different vocabulary than translations
-# 3. Root extraction now ALWAYS returns lemma/word (never empty for non-empty input)
-# Timestamp: 2026-04-08-greek-fix-v1
+# Greek adapter: Document as TOOL LIMITATION, stop returning fake roots
+# Issue: Morpheus returns empty responses for Greek (works for Latin only)
+# Fix: Return empty root instead of input word when no data found
+# Status: Greek now joins Hebrew/Sanskrit as honestly empty, not fake PASS
+# Timestamp: 2026-04-08-greek-honest-empty
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== GREEK ROOT EXTRACTION FIX TEST ==="
+echo "=== GREEK TOOL LIMITATION FIX ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
 
-# First sync the code
+# Sync code
 echo "--- Step 1: Syncing code from origin/main ---"
 git fetch origin && git reset --hard origin/main
 echo "Now at: $(git rev-parse HEAD)"
 echo ""
 
-# Verify Greek adapter changes
+# Verify the fix
 echo "--- Step 2: Verifying Greek adapter changes ---"
-if grep -q "_DEBUG_MORPHEUS = True" analyzers/greek.py; then
-    echo "PASS: Greek adapter has debug output enabled"
+echo "Checking greek.py for honest empty root behavior..."
+if grep -q "TOOL LIMITATION" analyzers/greek.py; then
+    echo "PASS: Greek adapter documents tool limitation"
 else
-    echo "INFO: Greek debug output not enabled"
+    echo "FAIL: Missing tool limitation documentation"
 fi
 
-if grep -q "Strategy 1:" analyzers/greek.py; then
-    echo "PASS: Greek adapter has multiple parsing strategies"
+if grep -q "zero error suppression" analyzers/greek.py; then
+    echo "PASS: Greek adapter has zero error suppression comment"
 else
-    echo "INFO: Greek parsing strategies not found"
+    echo "INFO: Zero error suppression comment not found"
 fi
+
 echo ""
 
-# Run comprehensive test - debug output will show Morpheus responses
-echo "--- Step 3: Running test (watch for [DEBUG] lines showing Morpheus responses) ---"
+# Direct test of Greek Morpheus endpoint
+echo "--- Step 3: Testing Morpheus Greek endpoint directly ---"
+echo "Testing word: γράφω (write)"
+curl -s "http://localhost:1315/greek/γραφω" | head -c 200 || echo "(empty or error)"
+echo ""
+echo "Testing word: καρδία (heart)"
+curl -s "http://localhost:1315/greek/καρδια" | head -c 200 || echo "(empty or error)"
+echo ""
+
+# For comparison, test Latin
+echo "Testing Latin for comparison: scribo"
+curl -s "http://localhost:1315/latin/scribo" | head -c 200
+echo ""
+echo ""
+
+# Run comprehensive test
+echo "--- Step 4: Running comprehensive test ---"
+echo "Expected: Greek roots should be EMPTY (not fake roots from input word)"
+echo ""
 python3 test_comprehensive.py
 
 echo ""
-echo "=== ALL TESTS COMPLETE ==="
+echo "=== TEST COMPLETE ==="
 echo "End: $(date -Iseconds)"

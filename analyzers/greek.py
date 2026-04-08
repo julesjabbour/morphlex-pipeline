@@ -1,10 +1,13 @@
-"""Ancient Greek morphological analyzer using Morpheus (primary) and Wiktextract (fallback).
+"""Ancient Greek morphological analyzer using Wiktextract (primary).
 
-REWRITTEN: 2026-04-08
-- Fixed root extraction from Morpheus responses
-- Added debug output to diagnose Morpheus response format
-- Uses lemma as root (same pattern as Latin adapter)
-- Multiple parsing strategies for Morpheus responses
+NOTE: Morpheus Greek endpoint returns empty responses - the Greek lexicon
+appears to not be loaded in the Docker container. Morpheus works for Latin
+but not Greek. This is a TOOL LIMITATION like Hebrew (no HebMorph) and
+Sanskrit (no Sanskrit Heritage).
+
+STATUS: Greek roots come from wiktextract_roots.pkl only.
+When pkl lookup fails, return empty root (not the input word).
+Zero error suppression - empty is honest, fake roots are not.
 """
 
 import os
@@ -275,8 +278,8 @@ def _extract_greek_root_from_lemma(lemma: str, pos: str) -> str:
         if lemma_norm.endswith(ending) and len(lemma_norm) > len(ending) + 1:
             return lemma[:-len(ending)] if lemma.endswith(ending) else lemma_norm[:-len(ending)]
 
-    # ALWAYS return lemma as fallback (same as Latin adapter)
-    # Never return empty for non-empty input
+    # Return lemma only if it differs from input (actual lemmatization happened)
+    # For Greek, Morpheus doesn't work - this code path won't be reached
     return lemma
 
 
@@ -334,11 +337,9 @@ def _extract_greek_root(word: str, concept: dict) -> str:
                 if not is_pie_reconstruction(root_str):
                     return root_str
 
-    # Fallback: use the word itself as root (like Latin adapter does with lemma)
-    # Greek word is a valid root representation, better than empty
-    if word:
-        return word
-
+    # NO FALLBACK: Return empty if no actual root data found
+    # Returning the input word as root is a fake result - zero error suppression
+    # Greek is a TOOL LIMITATION like Hebrew/Sanskrit
     return ''
 
 
