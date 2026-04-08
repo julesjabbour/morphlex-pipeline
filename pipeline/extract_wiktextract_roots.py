@@ -25,8 +25,11 @@ OUTPUT_FILE = os.path.join(DATA_DIR, 'wiktextract_roots.pkl')
 TARGET_LANGUAGES = {'he', 'sa', 'grc', 'ar', 'la', 'en', 'de', 'tr', 'zh', 'ja', 'ine-pro'}
 
 # Languages where we want to filter out PIE reconstructions
-# For these languages, exclude roots where source_lang is 'ine-pro'
+# For these languages, filter roots that look like PIE reconstructions (by content, not source_lang)
 FILTER_PIE_ROOTS = {'he', 'sa', 'ar', 'grc'}
+
+# PIE reconstruction markers - roots containing these are filtered for FILTER_PIE_ROOTS languages
+PIE_MARKERS = {'*', 'ḱ', 'ǵ', 'ʰ', 'ʷ', '₁', '₂', '₃', 'h₁', 'h₂', 'h₃'}
 
 
 def extract_roots():
@@ -82,17 +85,8 @@ def extract_roots():
 
                 # Template format: {{root|target_lang|source_lang|root1|root2|...}}
                 # args['1'] = target language (should match entry lang)
-                # args['2'] = source language of the ROOT (he, sa, ine-pro, etc.)
+                # args['2'] = source language (NOT used for filtering - unreliable in Wiktextract)
                 # args['3'], args['4'], etc. = actual root consonants
-
-                source_lang = args.get('2', '').strip()
-
-                # For Hebrew/Sanskrit/Arabic/Greek: filter out PIE reconstructions
-                # This fixes Bug 1 where Hebrew roots showed *ḱerd- instead of consonantal roots
-                # And Bug 2a where Greek roots showed *wed- instead of Greek roots
-                if lang_code in FILTER_PIE_ROOTS:
-                    if source_lang == 'ine-pro':
-                        continue  # Skip PIE roots for these languages
 
                 # Extract roots from position 3 onwards
                 root_parts = []
@@ -104,6 +98,17 @@ def extract_roots():
                 if root_parts:
                     # Store as joined root (e.g., "k-t-b" for triconsonantal)
                     root_str = '-'.join(root_parts)
+
+                    # For Hebrew/Sanskrit/Arabic/Greek: filter out PIE reconstructions
+                    # Filter by CONTENT (starts with * or has PIE diacritics), NOT by source_lang
+                    # This fixes Bug 1 (Hebrew roots showing *ḱerd-) and Bug 2a (Greek showing *wed-)
+                    # while NOT causing Bug 2b regression (Arabic/Hebrew extraction dropping to near-zero)
+                    if lang_code in FILTER_PIE_ROOTS:
+                        # Check if root looks like a PIE reconstruction
+                        is_pie = root_str.startswith('*') or any(marker in root_str for marker in PIE_MARKERS)
+                        if is_pie:
+                            continue  # Skip PIE-looking roots for these languages
+
                     # Index by entry language (so adapters can look up words)
                     if root_str not in roots_index[lang_code][word]:
                         roots_index[lang_code][word].append(root_str)
