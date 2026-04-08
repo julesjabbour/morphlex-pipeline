@@ -68,7 +68,7 @@ else
         exit 1
     }
 
-    make || {
+    PERL5LIB=. make || {
         echo "FAIL: Hspell make failed"
         exit 1
     }
