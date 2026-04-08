@@ -6,7 +6,7 @@
 # 3. Sanskrit diagnostic to assess coverage
 # 4. Chinese _find_cedict_path() actually called
 # 5. English logs when MorphoLex missing
-# Timestamp: 2026-04-08-comprehensive-test
+# Timestamp: 2026-04-08-rerun-after-fix-v2
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
