@@ -1,13 +1,15 @@
-"""Hebrew morphological analyzer using HspellPy for root extraction.
+"""Hebrew morphological analyzer using Hspell C library via ctypes.
 
 Hebrew uses a triconsonantal root system similar to Arabic.
-HspellPy provides morphological analysis via the Hspell C library.
+Uses libhspell.so.0 directly via ctypes (HspellPy is broken on Python 3.12).
 NO HARDCODED ROOTS. NO RULE-BASED FALLBACK.
 """
 
+import ctypes
 import os
 import pickle
 import unicodedata
+from ctypes import c_char_p, c_int, c_void_p, CFUNCTYPE, POINTER, byref
 from typing import Optional
 
 from pipeline.wiktextract_loader import load_index
@@ -17,31 +19,74 @@ from pipeline.wiktextract_loader import load_index
 _hebrew_index: Optional[dict] = None
 _roots_index: Optional[dict] = None
 _normalized_lookup: Optional[dict] = None  # {normalized_key: original_key}
-_hspell: Optional[object] = None
+_hspell_dict: c_void_p = None
+_hspell_lib: Optional[ctypes.CDLL] = None
 _hspell_available: Optional[bool] = None
 
 ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
+HSPELL_LIB_PATH = '/usr/local/lib/libhspell.so.0'
+
+# Hspell callback type: int callback(const char *word, const char *baseword, const char *desc, void *data)
+HSPELL_CALLBACK = CFUNCTYPE(c_int, c_char_p, c_char_p, c_char_p, c_void_p)
 
 
 def _init_hspell():
-    """Initialize HspellPy if available."""
-    global _hspell, _hspell_available
+    """Initialize Hspell C library via ctypes."""
+    global _hspell_dict, _hspell_lib, _hspell_available
 
     if _hspell_available is not None:
         return _hspell_available
 
     try:
-        import HspellPy
-        _hspell = HspellPy.Hspell(linguistics=True)
+        # Load the shared library
+        if not os.path.exists(HSPELL_LIB_PATH):
+            print(f"[DEBUG] libhspell.so.0 not found at {HSPELL_LIB_PATH}")
+            _hspell_available = False
+            return False
+
+        _hspell_lib = ctypes.CDLL(HSPELL_LIB_PATH)
+
+        # Define function signatures
+        # int hspell_init(struct dict_radix **dictp, int flags)
+        _hspell_lib.hspell_init.argtypes = [POINTER(c_void_p), c_int]
+        _hspell_lib.hspell_init.restype = c_int
+
+        # int hspell_check_word(struct dict_radix *dict, const char *word, int *preflen)
+        _hspell_lib.hspell_check_word.argtypes = [c_void_p, c_char_p, POINTER(c_int)]
+        _hspell_lib.hspell_check_word.restype = c_int
+
+        # void hspell_enum_splits(struct dict_radix *dict, const char *word,
+        #                         int (*callback)(const char *, const char *, const char *, void *),
+        #                         void *data)
+        _hspell_lib.hspell_enum_splits.argtypes = [c_void_p, c_char_p, HSPELL_CALLBACK, c_void_p]
+        _hspell_lib.hspell_enum_splits.restype = None
+
+        # void hspell_uninit(struct dict_radix *dict)
+        _hspell_lib.hspell_uninit.argtypes = [c_void_p]
+        _hspell_lib.hspell_uninit.restype = None
+
+        # Initialize the dictionary
+        # HSPELL_OPT_LINGUISTICS = 16 (enables linguistic info)
+        HSPELL_OPT_LINGUISTICS = 16
+        dict_ptr = c_void_p()
+        ret = _hspell_lib.hspell_init(byref(dict_ptr), HSPELL_OPT_LINGUISTICS)
+
+        if ret != 0:
+            print(f"[DEBUG] hspell_init failed with code {ret}")
+            _hspell_available = False
+            return False
+
+        _hspell_dict = dict_ptr
         _hspell_available = True
-        print("[DEBUG] HspellPy initialized successfully")
+        print("[DEBUG] Hspell C library initialized successfully via ctypes")
         return True
-    except ImportError:
-        print("[DEBUG] HspellPy not installed")
+
+    except OSError as e:
+        print(f"[DEBUG] Failed to load libhspell.so.0: {e}")
         _hspell_available = False
         return False
     except Exception as e:
-        print(f"[DEBUG] HspellPy init failed: {e}")
+        print(f"[DEBUG] Hspell init failed: {e}")
         _hspell_available = False
         return False
 
@@ -88,49 +133,74 @@ def _normalize_hebrew(word: str) -> str:
 
 def _extract_root_hspell(word: str) -> tuple[str, dict]:
     """
-    Extract root using HspellPy morphological analysis.
+    Extract root using Hspell C library via ctypes.
 
+    Calls hspell_enum_splits() to get morphological analyses.
     Returns: (root, morphological_info)
     """
-    global _hspell
+    global _hspell_dict, _hspell_lib
 
-    if not _init_hspell() or _hspell is None:
+    if not _init_hspell() or _hspell_dict is None:
         return '', {}
 
     try:
-        # Get morphological info
-        infos = list(_hspell.linginfo(word))
-        if not infos:
+        # Encode word to ISO-8859-8 (Hebrew encoding used by Hspell)
+        try:
+            word_bytes = word.encode('iso-8859-8')
+        except UnicodeEncodeError:
+            # Try UTF-8 as fallback
+            word_bytes = word.encode('utf-8')
+
+        # Collect results from callback
+        results = []
+
+        def splits_callback(word_ptr, baseword_ptr, desc_ptr, data_ptr):
+            """Callback for hspell_enum_splits - collects base words and descriptions."""
+            try:
+                base = baseword_ptr.decode('iso-8859-8') if baseword_ptr else ''
+                desc = desc_ptr.decode('iso-8859-8') if desc_ptr else ''
+                results.append({'base': base, 'desc': desc})
+            except Exception:
+                try:
+                    base = baseword_ptr.decode('utf-8') if baseword_ptr else ''
+                    desc = desc_ptr.decode('utf-8') if desc_ptr else ''
+                    results.append({'base': base, 'desc': desc})
+                except Exception:
+                    pass
+            return 0  # Continue enumeration
+
+        callback = HSPELL_CALLBACK(splits_callback)
+
+        # Call hspell_enum_splits
+        _hspell_lib.hspell_enum_splits(_hspell_dict, word_bytes, callback, None)
+
+        if not results:
+            # Try hspell_check_word as fallback
+            preflen = c_int()
+            ret = _hspell_lib.hspell_check_word(_hspell_dict, word_bytes, byref(preflen))
+            if ret > 0:
+                # Word is valid but no splits - use word minus prefix as base
+                if preflen.value > 0:
+                    base = word[preflen.value:]
+                    return base, {'check_word': True, 'preflen': preflen.value}
             return '', {}
 
-        # Parse the linguistic info
-        morph_info = {}
-        for info in infos:
-            # info is a LingInfo object with .word and .linginfo attributes
-            ling = getattr(info, 'linginfo', str(info))
-            if ling:
-                morph_info['raw'] = ling
-                base_word = getattr(info, 'word', word)
-                if base_word:
-                    morph_info['base'] = base_word
+        # Parse results to find the root/base
+        morph_info = {'splits': results}
 
-                # Try to extract root from linginfo if present
-                # Hspell linginfo may contain root information
-                if isinstance(ling, str):
-                    morph_info['linginfo_str'] = ling
-                break
-
-        # Use base form as potential root source
-        base = morph_info.get('base', '')
-        if base:
-            morph_info['extracted_base'] = base
-            # The base form from Hspell is often the shoresh or close to it
-            return base, morph_info
+        # The first result's base word is typically the lemma/root
+        for r in results:
+            base = r.get('base', '')
+            if base:
+                morph_info['base'] = base
+                morph_info['desc'] = r.get('desc', '')
+                # Return the base form - Hspell gives the dictionary form
+                return base, morph_info
 
         return '', morph_info
 
     except Exception as e:
-        print(f"[DEBUG] HspellPy error for '{word}': {e}")
+        print(f"[DEBUG] Hspell ctypes error for '{word}': {e}")
         return '', {}
 
 
@@ -138,8 +208,8 @@ def _extract_hebrew_root(word: str, etymology_links: list) -> str:
     """
     Extract Hebrew triconsonantal root (shoresh).
 
-    Uses HspellPy morphological analysis ONLY.
-    Falls back to wiktextract etymology data if HspellPy unavailable.
+    Uses Hspell C library via ctypes ONLY.
+    Falls back to wiktextract etymology data if Hspell unavailable.
     NO HARDCODED ROOTS. NO RULE-BASED FALLBACK.
     """
     global _normalized_lookup
@@ -195,7 +265,7 @@ def analyze_hebrew(word: str) -> list[dict]:
     """
     Analyze a Hebrew word and return morphological analyses.
 
-    Uses HspellPy for morphological analysis.
+    Uses Hspell C library (libhspell.so.0) via ctypes.
     NO HARDCODED ROOTS. NO RULE-BASED FALLBACK.
 
     Args:
@@ -247,7 +317,7 @@ def analyze_hebrew(word: str) -> list[dict]:
                 'hspell_info': hspell_info.get('raw') if hspell_info else None,
             },
             'confidence': 0.8,
-            'source_tool': 'hspell'
+            'source_tool': 'hspell_ctypes'
         }
         results.append(result)
         return results
@@ -297,7 +367,7 @@ def analyze_hebrew(word: str) -> list[dict]:
 
         # Determine source tool
         if hspell_root:
-            source_tool = 'hspell+wiktextract'
+            source_tool = 'hspell_ctypes+wiktextract'
         elif root:
             source_tool = 'wiktextract'
         else:
@@ -351,11 +421,12 @@ if __name__ == '__main__':
         'חלון',    # window
     ]
 
-    print("=== HEBREW ROOT EXTRACTION TEST (HONEST - NO HARDCODING) ===\n")
+    print("=== HEBREW ROOT EXTRACTION TEST (CTYPES - NO HARDCODING) ===\n")
 
-    # Check HspellPy availability
+    # Check Hspell C library availability
     hspell_ok = _init_hspell()
-    print(f"HspellPy available: {hspell_ok}\n")
+    print(f"Hspell C library available: {hspell_ok}")
+    print(f"Library path: {HSPELL_LIB_PATH}\n")
 
     found = 0
     empty = 0
@@ -371,4 +442,4 @@ if __name__ == '__main__':
             empty += 1
 
     print(f"\n=== RESULTS: {found} roots found, {empty} empty ===")
-    print("NOTE: Without HspellPy, root extraction depends on wiktextract data only.")
+    print("NOTE: Without Hspell C library, root extraction depends on wiktextract data only.")

@@ -1,11 +1,12 @@
 #!/bin/bash
-# INSTALL HSPELL ON VM AND TEST HEBREW ROOT EXTRACTION
-# Timestamp: 2026-04-08-hspell-install
-# NO HARDCODING. HONEST HEBREW ADAPTER.
+# TEST HSPELL CTYPES WRAPPER FOR HEBREW ROOT EXTRACTION
+# Timestamp: 2026-04-08-hspell-ctypes
+# HspellPy is dead on Python 3.12. Using ctypes to call libhspell.so.0 directly.
+# NO HARDCODING. NO RULE-BASED FALLBACK.
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== HSPELL INSTALLATION AND HEBREW ROOT TEST ==="
+echo "=== HSPELL CTYPES HEBREW ROOT TEST ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -31,129 +32,69 @@ if grep -q "_extract_root_fallback\|_strip_affixes" analyzers/hebrew.py; then
 else
     echo "PASS: No rule-based fallback (honest adapter)"
 fi
-echo ""
 
-# Install Hspell C library
-echo "--- Step 3: Install Hspell C library ---"
-
-# Check if already installed
-if ldconfig -p | grep -q libhspell; then
-    echo "Hspell C library already installed"
+# Verify ctypes approach
+if grep -q "import ctypes" analyzers/hebrew.py; then
+    echo "PASS: Using ctypes approach"
 else
-    echo "Installing Hspell C library from source..."
-
-    # Install build dependencies
-    sudo apt-get update && sudo apt-get install -y build-essential zlib1g-dev || {
-        echo "WARNING: apt-get failed, trying without update..."
-    }
-
-    # Download and build Hspell
-    cd /tmp
-    rm -rf hspell-1.4 hspell-1.4.tar.gz
-
-    wget http://hspell.ivrix.org.il/hspell-1.4.tar.gz || {
-        echo "FAIL: Could not download Hspell"
-        echo "Trying alternative mirror..."
-        wget https://github.com/julesjabbour/hspell-mirror/raw/main/hspell-1.4.tar.gz || {
-            echo "FAIL: All download attempts failed"
-            exit 1
-        }
-    }
-
-    tar xzf hspell-1.4.tar.gz
-    cd hspell-1.4
-
-    ./configure --enable-shared --enable-linginfo || {
-        echo "FAIL: Hspell configure failed"
-        exit 1
-    }
-
-    PERL5LIB=. make || {
-        echo "FAIL: Hspell make failed"
-        exit 1
-    }
-
-    sudo make install || {
-        echo "FAIL: Hspell make install failed"
-        exit 1
-    }
-
-    sudo ldconfig
-
-    cd /mnt/pgdata/morphlex
-
-    # Verify installation
-    if ldconfig -p | grep -q libhspell; then
-        echo "SUCCESS: Hspell C library installed"
-    else
-        echo "FAIL: Hspell C library not found after install"
-        exit 1
-    fi
+    echo "FAIL: Not using ctypes approach!"
+    exit 1
 fi
 echo ""
 
-# Install HspellPy
-echo "--- Step 4: Install HspellPy Python package ---"
-
-# Check if already installed
-if python3 -c "import HspellPy; print('HspellPy version:', HspellPy.__version__ if hasattr(HspellPy, '__version__') else 'unknown')" 2>/dev/null; then
-    echo "HspellPy already installed"
+# Verify Hspell C library installation
+echo "--- Step 3: Verify Hspell C library ---"
+if [ -f /usr/local/lib/libhspell.so.0 ]; then
+    echo "PASS: libhspell.so.0 found at /usr/local/lib/libhspell.so.0"
+    ls -la /usr/local/lib/libhspell*
 else
-    echo "Installing HspellPy..."
-    pip install HspellPy || {
-        echo "Trying with --break-system-packages..."
-        pip install HspellPy --break-system-packages || {
-            echo "FAIL: Could not install HspellPy"
-            exit 1
-        }
-    }
-
-    # Verify installation
-    if python3 -c "import HspellPy; print('SUCCESS: HspellPy imported')" 2>/dev/null; then
-        echo "HspellPy installed successfully"
-    else
-        echo "FAIL: HspellPy import failed after install"
-        exit 1
-    fi
+    echo "FAIL: libhspell.so.0 not found at /usr/local/lib/libhspell.so.0"
+    echo "Checking ldconfig..."
+    ldconfig -p | grep hspell || echo "Not in ldconfig either"
+    exit 1
 fi
 echo ""
 
-# Test HspellPy directly
-echo "--- Step 5: Test HspellPy directly ---"
+# Test ctypes can load the library
+echo "--- Step 4: Test ctypes can load libhspell.so.0 ---"
 python3 << 'EOF'
-import HspellPy
+import ctypes
+import os
 
-print("Testing HspellPy directly:")
-hspell = HspellPy.Hspell(linguistics=True)
+lib_path = '/usr/local/lib/libhspell.so.0'
+print(f"Loading: {lib_path}")
+print(f"File exists: {os.path.exists(lib_path)}")
 
-# Test word
-word = 'מילון'
-print(f"  Word: {word}")
+try:
+    lib = ctypes.CDLL(lib_path)
+    print(f"SUCCESS: Loaded libhspell.so.0")
 
-# Try linginfo
-infos = list(hspell.linginfo(word))
-print(f"  linginfo results: {len(infos)}")
-for info in infos[:3]:
-    print(f"    - {info}")
-
-# Try spell check
-correct = hspell.check(word)
-print(f"  Spelling correct: {correct}")
-
-print("HspellPy direct test: PASS")
+    # Check for required functions
+    funcs = ['hspell_init', 'hspell_check_word', 'hspell_enum_splits', 'hspell_uninit']
+    for func in funcs:
+        if hasattr(lib, func):
+            print(f"  - {func}: FOUND")
+        else:
+            print(f"  - {func}: MISSING")
+except Exception as e:
+    print(f"FAIL: Could not load library: {e}")
+    exit(1)
 EOF
 echo ""
 
-# Test Hebrew adapter with 10 random words
-echo "--- Step 6: Test Hebrew adapter with 10 RANDOM words ---"
+# Test Hebrew adapter with ctypes
+echo "--- Step 5: Test Hebrew adapter with 10 RANDOM words ---"
 python3 << 'EOF'
 import sys
 sys.path.insert(0, '/mnt/pgdata/morphlex')
 
-from analyzers.hebrew import analyze_hebrew, _init_hspell
+from analyzers.hebrew import analyze_hebrew, _init_hspell, HSPELL_LIB_PATH
 
-print("Hebrew adapter test (HONEST - NO HARDCODING)")
-print(f"HspellPy available: {_init_hspell()}")
+print("Hebrew adapter test (CTYPES - NO HARDCODING)")
+print(f"Library path: {HSPELL_LIB_PATH}")
+
+hspell_ok = _init_hspell()
+print(f"Hspell initialized: {hspell_ok}")
 print("")
 
 # 10 random Hebrew words - NOT from any test list
@@ -189,18 +130,17 @@ print("")
 print(f"=== RESULTS: {found}/10 roots found, {empty}/10 empty ===")
 
 if found > 0:
-    print("STATUS: PARTIAL SUCCESS - HspellPy working")
+    print("STATUS: SUCCESS - Hspell ctypes working")
 else:
     print("STATUS: NEEDS INVESTIGATION - no roots found")
-
 EOF
 echo ""
 
 # Run comprehensive test
-echo "--- Step 7: Run comprehensive adapter test ---"
+echo "--- Step 6: Run comprehensive adapter test ---"
 cd /mnt/pgdata/morphlex
 python3 test_comprehensive.py 2>&1 | head -150
 echo ""
 
-echo "=== HSPELL INSTALLATION COMPLETE ==="
+echo "=== HSPELL CTYPES TEST COMPLETE ==="
 echo "End: $(date -Iseconds)"
