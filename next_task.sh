@@ -1,6 +1,6 @@
 #!/bin/bash
 # TEST HSPELL SUBPROCESS FOR HEBREW ROOT EXTRACTION
-# Timestamp: 2026-04-08-hspell-subprocess
+# Timestamp: 2026-04-08-parser-fix-88962a1
 # ctypes approach segfaults. Using subprocess to call hspell binary directly.
 # NO HARDCODING. NO RULE-BASED FALLBACK.
 
