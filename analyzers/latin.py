@@ -2,8 +2,17 @@
 
 import subprocess
 import re
+import unicodedata
 import urllib.request
 import urllib.error
+
+
+def _strip_diacritics(text: str) -> str:
+    """Remove diacritics/macrons from text (e.g., māter → mater)."""
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', text)
+        if unicodedata.category(c) != 'Mn'
+    )
 
 
 # POS tag mapping from Morpheus (uses single-letter codes in <NL> format)
@@ -50,7 +59,15 @@ def _query_morpheus(word: str) -> list[dict]:
     results = []
 
     try:
-        url = f"http://localhost:1315/latin/{word}"
+        # Strip diacritics/macrons (Morpheus expects ASCII Latin)
+        clean_word = _strip_diacritics(word)
+        # Handle multi-word translations: take only the first word
+        if ' ' in clean_word:
+            clean_word = clean_word.split()[0]
+        if not clean_word:
+            return results
+
+        url = f"http://localhost:1315/latin/{clean_word}"
         with urllib.request.urlopen(url, timeout=5) as response:
             text_data = response.read().decode('utf-8')
 
@@ -144,11 +161,18 @@ def _query_latmor(word: str) -> list[dict]:
     """
     results = []
 
+    # Strip diacritics/macrons and handle multi-word translations
+    clean_word = _strip_diacritics(word)
+    if ' ' in clean_word:
+        clean_word = clean_word.split()[0]
+    if not clean_word:
+        return results
+
     try:
         # Run fst-infl with the word
         proc = subprocess.run(
             ['fst-infl', '/mnt/pgdata/morphlex/data/latmor/latmor.a'],
-            input=word,
+            input=clean_word,
             capture_output=True,
             text=True,
             timeout=10

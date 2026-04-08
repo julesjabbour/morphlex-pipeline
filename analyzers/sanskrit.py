@@ -4,6 +4,8 @@ Uses reverse lookup from Sanskrit words to English concepts via precomputed inde
 Sanskrit is a major source language for PIE etymologies.
 """
 
+import os
+import pickle
 from typing import Optional
 
 from pipeline.wiktextract_loader import load_index
@@ -11,6 +13,22 @@ from pipeline.wiktextract_loader import load_index
 
 # Module-level cache for loaded index
 _sanskrit_index: Optional[dict] = None
+_roots_index: Optional[dict] = None
+
+ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
+
+
+def _load_roots_index():
+    """Load wiktextract_roots.pkl and return Sanskrit roots."""
+    global _roots_index
+    if _roots_index is None:
+        if os.path.exists(ROOTS_PKL_PATH):
+            with open(ROOTS_PKL_PATH, 'rb') as f:
+                all_roots = pickle.load(f)
+            _roots_index = all_roots.get('sa', {})
+        else:
+            _roots_index = {}
+    return _roots_index
 
 
 def _load_sanskrit_data() -> None:
@@ -36,14 +54,22 @@ def _normalize_sanskrit(word: str) -> str:
 
 def _extract_sanskrit_root(word: str, etymology_links: list) -> str:
     """
-    Extract Sanskrit root from etymology data if available.
+    Extract Sanskrit root (dhatu) from wiktextract_roots.pkl or etymology data.
 
     Sanskrit uses a root (dhatu) system.
     """
-    # Look for root info in etymology
+    # First, try direct lookup in wiktextract_roots.pkl
+    roots_index = _load_roots_index()
+    if word in roots_index and roots_index[word]:
+        return roots_index[word][0]  # Return first root
+
+    # Fallback: Look for root info in etymology
     for link in etymology_links:
         if link.get('type') == 'root':
-            return link.get('source_word', '')
+            source_word = link.get('source_word', '')
+            # Filter out PIE reconstructions (they start with * or contain PIE-specific chars)
+            if source_word and not source_word.startswith('*') and not any(c in source_word for c in ['ḱ', 'ǵ', 'ʰ', 'ʷ', '₂', '₃']):
+                return source_word
 
     # No root found - return empty string (not the normalized word)
     return ''

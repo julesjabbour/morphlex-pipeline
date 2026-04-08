@@ -1,21 +1,53 @@
 """Ancient Greek morphological analyzer using Wiktextract index."""
 
+import os
+import pickle
+
 from pipeline.wiktextract_loader import load_index
 
 _index = None
+_roots_index = None
+
+ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
+
+
+def _load_roots_index():
+    """Load wiktextract_roots.pkl and return Greek roots."""
+    global _roots_index
+    if _roots_index is None:
+        if os.path.exists(ROOTS_PKL_PATH):
+            with open(ROOTS_PKL_PATH, 'rb') as f:
+                all_roots = pickle.load(f)
+            _roots_index = all_roots.get('grc', {})
+        else:
+            _roots_index = {}
+    return _roots_index
 
 
 def _extract_greek_root(word: str, concept: dict) -> str:
     """
-    Extract Ancient Greek root from concept data.
+    Extract Ancient Greek root from concept data or wiktextract_roots.pkl.
 
     Greek uses a root system similar to other Indo-European languages.
     """
-    # Try to get root from etymology if available
-    etymology = concept.get('etymology', []) if isinstance(concept, dict) else []
+    # First, try direct lookup in wiktextract_roots.pkl
+    roots_index = _load_roots_index()
+    if word in roots_index and roots_index[word]:
+        return roots_index[word][0]  # Return first root
+
+    # Fallback: Try to get root from etymology_templates if available
+    etymology = concept.get('etymology_templates', []) if isinstance(concept, dict) else []
     for etym in etymology:
-        if isinstance(etym, dict) and etym.get('type') == 'root':
-            return etym.get('source_word', '')
+        if isinstance(etym, dict) and etym.get('name') == 'root':
+            args = etym.get('args', {})
+            # Extract root parts from positions 3+
+            root_parts = []
+            for i in range(3, 10):
+                root_val = args.get(str(i), '')
+                if root_val and root_val != '-':
+                    root_parts.append(root_val)
+            if root_parts:
+                return '-'.join(root_parts)
 
     # No root found - return empty string (not the word itself)
     return ''

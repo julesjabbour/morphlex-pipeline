@@ -1,9 +1,9 @@
 #!/bin/bash
-# Task: Phase 1-2 Verification Tests
-# Tests: PIE asterisk fix, root fallback fix, schema columns, wiktextract root extraction
+# Task: Bug Fix Verification - Hebrew/Sanskrit PIE, Greek empty roots, Latin encoding
+# Fixes: extract_wiktextract_roots.py, greek.py, hebrew.py, sanskrit.py, latin.py
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== PHASE 1-2 VERIFICATION TESTS ==="
+echo "=== BUG FIX VERIFICATION TESTS ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -14,93 +14,13 @@ git fetch origin && git reset --hard origin/main
 echo "Now at: $(git rev-parse HEAD)"
 echo ""
 
-# Apply schema changes (Phase 1.2)
-echo "--- Phase 1.2: Applying schema changes ---"
-PGPASSWORD=morphlex_2026 psql -h localhost -U morphlex_user -d morphlex -c "
-ALTER TABLE lexicon.entries ADD COLUMN IF NOT EXISTS morph_type VARCHAR(20);
-ALTER TABLE lexicon.entries ADD COLUMN IF NOT EXISTS derived_from_root TEXT;
-ALTER TABLE lexicon.entries ADD COLUMN IF NOT EXISTS derivation_mode VARCHAR(50);
-"
-echo "Verifying columns exist:"
-PGPASSWORD=morphlex_2026 psql -h localhost -U morphlex_user -d morphlex -c "\d lexicon.entries" | grep -E "(morph_type|derived_from_root|derivation_mode)"
-echo ""
-
-# Test Phase 1.1: PIE asterisk fix
-echo "--- Phase 1.1: PIE Asterisk Fix Test ---"
-python3 << 'PYTEST_PIE'
-from analyzers.pie import analyze_pie
-
-# Test words known to have PIE etymologies
-test_words = ['water', 'mother', 'father', 'brother', 'sister']
-asterisk_count = 0
-no_asterisk_count = 0
-
-print("PIE root extraction test:")
-for word in test_words:
-    results = analyze_pie(word)
-    for r in results:
-        root = r.get('root', '')
-        has_asterisk = root.startswith('*')
-        if has_asterisk:
-            asterisk_count += 1
-        else:
-            no_asterisk_count += 1
-        print(f"  {word} -> root='{root}' {'[FAIL: has asterisk]' if has_asterisk else '[OK]'}")
-
-print(f"\nSummary: {no_asterisk_count} without asterisk, {asterisk_count} with asterisk")
-if asterisk_count == 0:
-    print("PASS: PIE roots no longer have asterisk prefix")
-else:
-    print("FAIL: Some PIE roots still have asterisk prefix")
-PYTEST_PIE
-echo ""
-
-# Test Phase 1.3: Root fallback returns '' not normalized word
-echo "--- Phase 1.3: Root Fallback Test ---"
-python3 << 'PYTEST_FALLBACK'
-from analyzers.hebrew import analyze_hebrew, _extract_hebrew_root
-from analyzers.sanskrit import analyze_sanskrit, _extract_sanskrit_root
-from analyzers.greek import analyze_greek, _extract_greek_root
-
-# Test with made-up words that won't have etymology entries
-test_cases = [
-    ('hebrew', 'בדיקה123', analyze_hebrew, _extract_hebrew_root),
-    ('sanskrit', 'परीक्षा123', analyze_sanskrit, _extract_sanskrit_root),
-    ('greek', 'δοκιμή123', analyze_greek, _extract_greek_root),
-]
-
-print("Testing root fallback behavior:")
-print("(When etymology lookup fails, adapters should return '' not the normalized word)")
-print()
-
-all_pass = True
-for lang, test_word, analyze_fn, extract_fn in test_cases:
-    # Test the extract function directly with empty etymology
-    root = extract_fn(test_word, []) if lang != 'greek' else extract_fn(test_word, {})
-
-    if root == '':
-        print(f"  {lang}: _extract_{lang}_root('{test_word}', []) -> '' [OK]")
-    else:
-        print(f"  {lang}: _extract_{lang}_root('{test_word}', []) -> '{root}' [FAIL: should be '']")
-        all_pass = False
-
-print()
-if all_pass:
-    print("PASS: All adapters return '' when no etymology root found")
-else:
-    print("FAIL: Some adapters still return normalized word as fallback")
-PYTEST_FALLBACK
-echo ""
-
-# Run Phase 2: Extract Wiktextract roots
-echo "--- Phase 2: Extract Wiktextract Roots ---"
-echo "Running extract_wiktextract_roots.py..."
+# Re-extract roots with fixed script (now uses template source_lang, not entry lang_code)
+echo "--- Re-extracting Wiktextract roots with fixed script ---"
 python3 pipeline/extract_wiktextract_roots.py
 echo ""
 
-# Check if wiktextract_roots.pkl was created
 if [ -f data/wiktextract_roots.pkl ]; then
-    echo "wiktextract_roots.pkl created successfully"
+    echo "wiktextract_roots.pkl regenerated successfully"
     ls -lh data/wiktextract_roots.pkl
 else
     echo "ERROR: wiktextract_roots.pkl not created"
@@ -108,7 +28,7 @@ fi
 echo ""
 
 # Run 10-word Arabic test
-echo "--- 10-Word Arabic Test ---"
+echo "--- 10-Word Arabic Test (Bug Fix Verification) ---"
 python3 << 'PYTEST_ARABIC'
 import sys
 sys.path.insert(0, '/mnt/pgdata/morphlex')
@@ -131,7 +51,7 @@ import pickle
 with open('data/forward_translations.pkl', 'rb') as f:
     fwd = pickle.load(f)
 
-# 10 Arabic test words
+# 10 Arabic test words (same as Session 44)
 arabic_words = ['كتب', 'قلب', 'ماء', 'بيت', 'يد', 'عين', 'سمع', 'علم', 'كلم', 'حب']
 
 adapters = {
@@ -150,6 +70,13 @@ adapters = {
 
 print(f"Start: {datetime.now().isoformat()}")
 print()
+
+# Track bugs
+latin_errors = []
+hebrew_pie_roots = []
+sanskrit_pie_roots = []
+greek_empty = 0
+greek_found = 0
 
 total_results = 0
 for ar_word in arabic_words:
@@ -173,15 +100,70 @@ for ar_word in arabic_words:
 
             # Show sample root for verification
             sample_root = results[0].get('root', '') if results else ''
-            print(f"  {lang}: {count} results (root='{sample_root[:20]}...' if len(sample_root) > 20 else sample_root)")
+
+            # Track bug indicators
+            if lang == 'he' and sample_root.startswith('*'):
+                hebrew_pie_roots.append((ar_word, sample_root))
+            if lang == 'sa' and sample_root.startswith('*'):
+                sanskrit_pie_roots.append((ar_word, sample_root))
+            if lang == 'grc':
+                if sample_root:
+                    greek_found += 1
+                else:
+                    greek_empty += 1
+
+            # Format root display (truncate if > 20 chars)
+            root_display = sample_root[:20] + '...' if len(sample_root) > 20 else sample_root
+            print(f"  {lang}: {count} results (root='{root_display}')")
+
         except Exception as e:
             print(f"  {lang}: ERROR - {e}")
+            if lang == 'la':
+                latin_errors.append((ar_word, str(e)))
     print()
 
 print(f"TOTAL: {total_results} results from 10 words x 11 languages")
 print(f"End: {datetime.now().isoformat()}")
-PYTEST_ARABIC
-echo ""
+print()
 
+# Bug verification summary
+print("=== BUG FIX VERIFICATION ===")
+print()
+
+print("Bug 1 - Hebrew/Sanskrit PIE roots:")
+if hebrew_pie_roots:
+    print(f"  FAIL: Hebrew still has {len(hebrew_pie_roots)} PIE roots:")
+    for word, root in hebrew_pie_roots[:3]:
+        print(f"    {word}: {root}")
+else:
+    print("  PASS: Hebrew roots are NOT PIE reconstructions")
+
+if sanskrit_pie_roots:
+    print(f"  FAIL: Sanskrit still has {len(sanskrit_pie_roots)} PIE roots:")
+    for word, root in sanskrit_pie_roots[:3]:
+        print(f"    {word}: {root}")
+else:
+    print("  PASS: Sanskrit roots are NOT PIE reconstructions")
+print()
+
+print("Bug 2 - Greek empty roots:")
+print(f"  Found: {greek_found}, Empty: {greek_empty}")
+if greek_found > 0:
+    print("  PASS: Greek adapter is finding roots from wiktextract_roots.pkl")
+else:
+    print("  FAIL: Greek adapter still returns empty roots")
+print()
+
+print("Bug 3 - Latin encoding errors:")
+if latin_errors:
+    print(f"  FAIL: {len(latin_errors)} Latin errors:")
+    for word, err in latin_errors:
+        print(f"    {word}: {err}")
+else:
+    print("  PASS: Latin adapter handles macrons and multi-word translations")
+print()
+PYTEST_ARABIC
+
+echo ""
 echo "=== ALL TESTS COMPLETE ==="
 echo "End: $(date -Iseconds)"
