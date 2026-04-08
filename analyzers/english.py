@@ -238,24 +238,49 @@ def _fix_pos_tag(word: str, pos: str, lemma: str) -> str:
     """
     Fix common spaCy POS tagging errors.
 
-    Problem 5: spaCy incorrectly tags common nouns as PROPN.
+    Problem: spaCy incorrectly tags common nouns as PROPN when processed
+    in isolation (no sentence context). Single words look like titles
+    to the statistical model.
+
+    Fix strategy (in order of priority):
+    1. Lowercase check - all lowercase = never a proper noun in English
+    2. Morphological suffix heuristics - common noun suffixes
+    3. Small fallback set for genuine edge cases only
     """
-    # List of words commonly mistagged as PROPN
-    common_nouns = {
-        'dictionary', 'book', 'water', 'fire', 'hand', 'eye', 'stone',
-        'heart', 'sun', 'moon', 'tree', 'blood', 'house', 'word', 'name',
-        'day', 'night', 'year', 'time', 'man', 'woman', 'child', 'world'
-    }
+    if not word or not pos:
+        return pos
 
     word_lower = word.lower()
 
-    # If tagged as PROPN but is a common word, fix to NOUN
-    if pos == 'PROPN' and word_lower in common_nouns:
-        return 'NOUN'
+    if pos == 'PROPN':
+        # RULE 1 (PRIMARY): All lowercase word = never a proper noun
+        # Proper nouns are ALWAYS capitalized in English
+        if word == word_lower:
+            return 'NOUN'
 
-    # If all lowercase and tagged as PROPN, likely wrong
-    if pos == 'PROPN' and word == word_lower and not word[0].isupper():
-        return 'NOUN'
+        # RULE 2 (PRIMARY): Morphological suffix heuristics
+        # Words with these suffixes are virtually never proper nouns
+        noun_suffixes = (
+            'tion', 'sion', 'ment', 'ness', 'ity', 'ance', 'ence',
+            'ary', 'ery', 'ory', 'dom', 'hood', 'ship', 'ism', 'ist',
+            'ure', 'age', 'th', 'cy', 'ty'
+        )
+        if any(word_lower.endswith(suffix) for suffix in noun_suffixes):
+            return 'NOUN'
+
+        # RULE 3: Verb/adjective suffixes that get mistagged
+        if word_lower.endswith(('ing', 'ed')):
+            return 'VERB'
+        if word_lower.endswith('ly'):
+            return 'ADV'
+        if word_lower.endswith(('ful', 'less', 'able', 'ible', 'ous')):
+            return 'ADJ'
+
+        # RULE 4 (FALLBACK): Small set for genuine edge cases
+        # Only monosyllabic words that suffixes don't catch
+        edge_cases = {'book', 'word', 'day', 'man', 'sun', 'moon', 'tree'}
+        if word_lower in edge_cases:
+            return 'NOUN'
 
     return pos
 

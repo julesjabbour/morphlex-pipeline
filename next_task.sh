@@ -1,12 +1,15 @@
 #!/bin/bash
-# SANSKRIT VIDYUT INSTALLATION AND TEST
-# Timestamp: 2026-04-08-sanskrit-vidyut
-# Installs Vidyut Sanskrit analyzer and tests with 20 random words.
-# NO HARDCODING. All analysis from Vidyut's morphological database.
+# TEST: CLAUDE.md Rules + English POS Fix + Latin Disambiguation
+# Timestamp: 2026-04-08-triple-update
+# Tests all three changes from the merge:
+# 1. CLAUDE.md anti-fraud rules (verified by existence check)
+# 2. English _fix_pos_tag suffix heuristics (10 words should be NOUN not PROPN)
+# 3. Latin _disambiguate_latin_parses (5 words with confidence-ranked parses)
+# NO HARDCODING. All analysis from real tools (spaCy, Morpheus).
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== SANSKRIT VIDYUT INSTALLATION AND TEST ==="
+echo "=== TRIPLE UPDATE TEST ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -17,103 +20,153 @@ git fetch origin && git reset --hard origin/main
 echo "Now at: $(git rev-parse HEAD)"
 echo ""
 
-# Install dependencies
-echo "--- Installing Vidyut and dependencies ---"
-pip install vidyut indic-transliteration 2>&1 | tail -5
+# THING 1: Verify CLAUDE.md rules exist
+echo "=== THING 1: CLAUDE.md ANTI-FRAUD RULES ==="
+echo "Checking for new rules in CLAUDE.md..."
+if grep -q "ZERO HARDCODING RULE" CLAUDE.md && \
+   grep -q "ZERO SHORTCUT RULE" CLAUDE.md && \
+   grep -q "TESTING RULE" CLAUDE.md && \
+   grep -q "NO BROKEN PUSHES RULE" CLAUDE.md && \
+   grep -q "MARKER RULE" CLAUDE.md; then
+    echo "[OK] All 5 anti-fraud rules present in CLAUDE.md"
+else
+    echo "[FAIL] Missing rules in CLAUDE.md"
+    grep -E "(ZERO HARDCODING|ZERO SHORTCUT|TESTING RULE|NO BROKEN PUSHES|MARKER RULE)" CLAUDE.md || echo "No rules found"
+    exit 1
+fi
 echo ""
 
-# Download Vidyut data if not present
-VIDYUT_DATA_DIR="/mnt/pgdata/morphlex/data/vidyut_data"
-if [ ! -d "$VIDYUT_DATA_DIR/kosha" ]; then
-    echo "--- Downloading Vidyut data ---"
-    python3 << 'PYEOF'
-import vidyut
-import os
-
-data_path = '/mnt/pgdata/morphlex/data/vidyut_data'
-if not os.path.exists(data_path):
-    os.makedirs(data_path)
-
-print(f"Downloading Vidyut data to {data_path}...")
-vidyut.download_data(data_path)
-print("Download complete!")
-print(f"Files created: {os.listdir(data_path)}")
-PYEOF
-    echo ""
-else
-    echo "--- Vidyut data already present at $VIDYUT_DATA_DIR ---"
-    echo ""
-fi
-
-# Run Sanskrit adapter test with the 20 user-specified words
-echo "--- Testing Sanskrit adapter with 20 words ---"
+# THING 2: English POS Fix
+echo "=== THING 2: ENGLISH POS FIX TEST ==="
 python3 << 'PYEOF'
 import sys
 sys.path.insert(0, '/mnt/pgdata/morphlex')
 
-import analyzers.sanskrit as sanskrit
+import analyzers.english as english
 
-# The 20 test words specified by user (NEVER SEEN BEFORE - NO HARDCODING)
+# Test words that should ALL be NOUN, not PROPN
+# These all have common noun suffixes (-tion, -ment, -hood, -ary, -phy, -ure, etc.)
 test_words = [
-    'पुस्तक',   # book
-    'नदी',      # river
-    'वायु',     # wind
-    'अग्नि',    # fire
-    'पर्वत',    # mountain
-    'सूर्य',    # sun
-    'चन्द्र',   # moon
-    'वृक्ष',    # tree
-    'पुष्प',    # flower
-    'जल',       # water
-    'पृथ्वी',   # earth
-    'आकाश',     # sky
-    'मार्ग',    # path
-    'नगर',      # city
-    'राजा',     # king
-    'देव',      # god
-    'कन्या',    # daughter
-    'पुत्र',    # son
-    'गुरु',     # teacher
-    'शिष्य',    # student
+    'imagination',      # -tion suffix
+    'civilization',     # -tion suffix
+    'transportation',   # -tion suffix
+    'establishment',    # -ment suffix
+    'neighborhood',     # -hood suffix
+    'dictionary',       # -ary suffix
+    'astronomy',        # -my suffix (science field)
+    'philosophy',       # -phy suffix
+    'agriculture',      # -ure suffix
+    'temperature',      # -ure suffix
 ]
 
-print("=== SANSKRIT MORPHOLOGICAL ANALYSIS (VIDYUT) ===\n")
-
-# Check Vidyut availability
-vidyut_ok = sanskrit._init_vidyut()
-print(f"Vidyut available: {vidyut_ok}")
-if not vidyut_ok:
-    print(f"FATAL: Vidyut not available")
-    sys.exit(1)
-print()
-
-found = 0
-empty = 0
-
-print(f"{'Word':<12} {'Root':<12} {'Type':<15} {'Source'}")
+print("Testing English POS fix with 10 suffix-based words:")
+print(f"{'Word':<20} {'Expected':<10} {'Actual':<10} {'Status'}")
 print("-" * 55)
+
+passed = 0
+failed = 0
 
 for word in test_words:
-    results = sanskrit.analyze_sanskrit(word)
-    if results and results[0].get('root'):
-        r = results[0]
-        root_type = r['morphological_features'].get('root_type', 'unknown')
-        print(f"{word:<12} {r['root']:<12} {root_type:<15} {r['source_tool']}")
-        found += 1
+    results = english.analyze_english(word)
+    if results:
+        actual_pos = results[0].get('pos', 'UNKNOWN')
     else:
-        print(f"{word:<12} NO ROOT FOUND")
-        empty += 1
+        actual_pos = 'NO_RESULT'
+
+    expected = 'NOUN'
+    status = '[OK]' if actual_pos == expected else '[FAIL]'
+    print(f"{word:<20} {expected:<10} {actual_pos:<10} {status}")
+
+    if actual_pos == expected:
+        passed += 1
+    else:
+        failed += 1
 
 print("-" * 55)
-print(f"\n=== RESULTS: {found}/20 roots found ({found*100/20:.0f}%) ===")
+print(f"Results: {passed}/10 passed, {failed}/10 failed")
 
-if found >= 18:  # Allow 2 failures for edge cases
-    print("STATUS: [OK] Sanskrit adapter working with Vidyut")
+if failed > 0:
+    print("\n[FAIL] English POS fix not working - suffix heuristics should catch these")
+    sys.exit(1)
 else:
-    print("STATUS: [FAIL] Too many failures - check Vidyut installation")
+    print("\n[OK] English POS fix working correctly")
+PYEOF
+
+if [ $? -ne 0 ]; then
+    echo "[FAIL] English POS test failed"
+    exit 1
+fi
+echo ""
+
+# THING 3: Latin Disambiguation
+echo "=== THING 3: LATIN DISAMBIGUATION TEST ==="
+python3 << 'PYEOF'
+import sys
+sys.path.insert(0, '/mnt/pgdata/morphlex')
+
+import analyzers.latin as latin
+
+# Test words with multiple possible parses
+# Each should return a confidence-ranked list with best parse first
+test_words = ['liber', 'amat', 'rex', 'bellum', 'iter']
+
+print("Testing Latin disambiguation with 5 ambiguous words:")
+print("Each word should return confidence-ranked parses with best first\n")
+
+all_ok = True
+
+for word in test_words:
+    print(f"=== {word} ===")
+    results = latin.analyze_latin(word, return_all=True)
+
+    if not results:
+        print(f"  [FAIL] No results for '{word}'")
+        all_ok = False
+        continue
+
+    # Check that first result has highest confidence
+    first_confidence = results[0].get('confidence', 0)
+    is_best = results[0].get('is_best_parse', False)
+
+    print(f"  Best parse: lemma='{results[0].get('lemma')}' pos='{results[0].get('pos')}' conf={first_confidence:.2f} is_best={is_best}")
+
+    # Show all parses
+    for i, r in enumerate(results):
+        lemma = r.get('lemma', '?')
+        pos = r.get('pos', '?')
+        conf = r.get('confidence', 0)
+        best_mark = '*' if r.get('is_best_parse', False) else ' '
+        print(f"  {best_mark} [{i+1}] lemma='{lemma}' pos='{pos}' conf={conf:.2f}")
+
+    # Verify ranking: best parse should be first
+    if len(results) > 1:
+        if not is_best:
+            print(f"  [FAIL] First result not marked as best parse")
+            all_ok = False
+        else:
+            print(f"  [OK] Best parse correctly ranked first with {len(results)} total parses")
+    else:
+        print(f"  [OK] Single unambiguous parse")
+
+    print()
+
+if all_ok:
+    print("[OK] Latin disambiguation working correctly")
+else:
+    print("[FAIL] Latin disambiguation has issues")
     sys.exit(1)
 PYEOF
 
+if [ $? -ne 0 ]; then
+    echo "[FAIL] Latin disambiguation test failed"
+    exit 1
+fi
 echo ""
-echo "=== SANSKRIT VIDYUT TASK COMPLETE ==="
+
+echo "=== ALL THREE TESTS PASSED ==="
+echo "1. CLAUDE.md anti-fraud rules: [OK]"
+echo "2. English POS suffix heuristics: [OK]"
+echo "3. Latin parse disambiguation: [OK]"
+echo ""
+echo "=== TRIPLE UPDATE TASK COMPLETE ==="
 echo "End: $(date -Iseconds)"

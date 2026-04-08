@@ -62,3 +62,15 @@ run.sh MUST have these three safeguards before the cron is re-enabled. All three
 ## OUTPUT RULES
 
 Never truncate Slack output. If output exceeds 3500 chars, split into multiple messages. Always write full output to /mnt/pgdata/morphlex/reports/ as timestamped .md file. Never suppress warnings or errors in any Python file or shell script — all errors must be visible in output.
+
+## ANTI-FRAUD RULES
+
+**ZERO HARDCODING RULE:** Never create dictionaries, lookup tables, sets, or lists that map specific words to specific results. Every result must come from a real tool (CAMeL, Zeyrek, Morpheus, Hspell, Vidyut, etc.) or from data files (pkl, wiktextract). If a tool is not installed, install it. If it cannot be installed, report the exact error with evidence. Returning correct answers for known test words while failing on unknown words is a critical failure.
+
+**ZERO SHORTCUT RULE:** If a task requires installing a tool and you cannot install it from your sandbox, put the install commands in next_task.sh so the VM runs them. Do not substitute a hardcoded workaround. Do not substitute a rule-based heuristic. Do not substitute a dictionary. The tool either works or it doesn't.
+
+**TESTING RULE:** All tests must include words that have never appeared in any previous message. If a test only passes on words from the original task description, the implementation is fraudulent.
+
+**NO BROKEN PUSHES RULE:** Test in your session before pushing to main. If it segfaults, fix it before pushing. If it returns empty for everything, fix it before pushing. If it returns the same string for every word, fix it before pushing. Push to main ONLY when it works.
+
+**MARKER RULE:** Every push to main that needs cron to run MUST include an updated next_task.sh with a new marker hash. If you forget, cron won't pick it up.
