@@ -57,16 +57,27 @@ def _extract_hebrew_root(word: str, etymology_links: list) -> str:
 
     Hebrew uses a triconsonantal root system similar to Arabic.
     """
-    # First, try direct lookup in wiktextract_roots.pkl
     roots_index = _load_roots_index()
+
+    # Try direct lookup
     if word in roots_index and roots_index[word]:
-        return roots_index[word][0]  # Return first root
+        return roots_index[word][0]
+
+    # Try normalized lookup (remove niqqud)
+    word_normalized = _normalize_hebrew(word)
+    if word_normalized != word and word_normalized in roots_index and roots_index[word_normalized]:
+        return roots_index[word_normalized][0]
+
+    # Try searching through index for normalized match
+    for hebrew_word, root_list in roots_index.items():
+        if root_list and _normalize_hebrew(hebrew_word) == word_normalized:
+            return root_list[0]
 
     # Fallback: Look for root info in etymology
     for link in etymology_links:
         if link.get('type') == 'root':
             source_word = link.get('source_word', '')
-            # Filter out PIE reconstructions (they start with * or contain -)
+            # Filter out PIE reconstructions (they start with * or contain special chars)
             if source_word and not source_word.startswith('*') and not any(c in source_word for c in ['ḱ', 'ǵ', 'ʰ', 'ʷ', '₂', '₃']):
                 return source_word
 

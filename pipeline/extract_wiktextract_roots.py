@@ -21,8 +21,12 @@ DATA_DIR = '/mnt/pgdata/morphlex/data'
 INPUT_FILE = os.path.join(DATA_DIR, 'raw-wiktextract-data.jsonl.gz')
 OUTPUT_FILE = os.path.join(DATA_DIR, 'wiktextract_roots.pkl')
 
-# Languages we care about
+# Languages we care about (entry languages)
 TARGET_LANGUAGES = {'he', 'sa', 'grc', 'ar', 'la', 'en', 'de', 'tr', 'zh', 'ja', 'ine-pro'}
+
+# Languages where we ONLY want native roots (filter out PIE reconstructions)
+# For these languages, source_lang in template must match entry lang_code
+NATIVE_ROOT_ONLY = {'he', 'sa', 'ar'}
 
 
 def extract_roots():
@@ -51,10 +55,12 @@ def extract_roots():
 
             entries_processed += 1
 
-            # Get the word (entry language doesn't matter - we use template source lang)
+            # Get the word and its language (entry language)
             word = entry.get('word', '')
+            lang_code = entry.get('lang_code', '')
 
-            if not word:
+            # Only process entries in target languages
+            if not word or lang_code not in TARGET_LANGUAGES:
                 continue
 
             # Check etymology_templates for root templates
@@ -75,14 +81,17 @@ def extract_roots():
                     continue
 
                 # Template format: {{root|target_lang|source_lang|root1|root2|...}}
-                # args['1'] = target language (entry's language, e.g. 'en' for English Wiktionary)
-                # args['2'] = source language of the ROOT (this is what matters: 'he', 'sa', 'ine-pro', etc.)
+                # args['1'] = target language (should match entry lang)
+                # args['2'] = source language of the ROOT (he, sa, ine-pro, etc.)
                 # args['3'], args['4'], etc. = actual root consonants
 
-                # CRITICAL: Use source language from template, not entry language
                 source_lang = args.get('2', '').strip()
-                if not source_lang or source_lang not in TARGET_LANGUAGES:
-                    continue
+
+                # For Hebrew/Sanskrit/Arabic: ONLY keep native roots (no PIE)
+                # This fixes Bug 1 where Hebrew roots showed *ḱerd- instead of consonantal roots
+                if lang_code in NATIVE_ROOT_ONLY:
+                    if source_lang != lang_code:
+                        continue  # Skip PIE/other language roots for these languages
 
                 # Extract roots from position 3 onwards
                 root_parts = []
@@ -94,9 +103,9 @@ def extract_roots():
                 if root_parts:
                     # Store as joined root (e.g., "k-t-b" for triconsonantal)
                     root_str = '-'.join(root_parts)
-                    # FIX: Use source_lang from template, not lang_code from entry
-                    if root_str not in roots_index[source_lang][word]:
-                        roots_index[source_lang][word].append(root_str)
+                    # Index by entry language (so adapters can look up words)
+                    if root_str not in roots_index[lang_code][word]:
+                        roots_index[lang_code][word].append(root_str)
                         roots_found += 1
 
     print(f"[{datetime.now().isoformat()}] Extraction complete")

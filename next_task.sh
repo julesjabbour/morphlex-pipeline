@@ -1,6 +1,9 @@
 #!/bin/bash
-# Task: Bug Fix Verification - Hebrew/Sanskrit PIE, Greek empty roots, Latin encoding
-# Fixes: extract_wiktextract_roots.py, greek.py, hebrew.py, sanskrit.py, latin.py
+# Task: Bug Fix Verification Round 2 - Greek missing langs + Hebrew empty lookup
+# Problem 1: Bug 1 fix broke extraction - Greek/en/de/tr/la/zh/ja now missing
+# Problem 2: Hebrew adapter can't find roots (763 in pkl, 0 found in test)
+# Fixes: extract_wiktextract_roots.py (index by entry lang, filter PIE for he/sa/ar)
+#        hebrew.py, greek.py (normalized lookups)
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 echo "=== BUG FIX VERIFICATION TESTS ==="
@@ -77,6 +80,8 @@ hebrew_pie_roots = []
 sanskrit_pie_roots = []
 greek_empty = 0
 greek_found = 0
+hebrew_empty = 0
+hebrew_found = 0
 
 total_results = 0
 for ar_word in arabic_words:
@@ -102,8 +107,13 @@ for ar_word in arabic_words:
             sample_root = results[0].get('root', '') if results else ''
 
             # Track bug indicators
-            if lang == 'he' and sample_root.startswith('*'):
-                hebrew_pie_roots.append((ar_word, sample_root))
+            if lang == 'he':
+                if sample_root.startswith('*'):
+                    hebrew_pie_roots.append((ar_word, sample_root))
+                elif sample_root:
+                    hebrew_found += 1
+                else:
+                    hebrew_empty += 1
             if lang == 'sa' and sample_root.startswith('*'):
                 sanskrit_pie_roots.append((ar_word, sample_root))
             if lang == 'grc':
@@ -146,12 +156,20 @@ else:
     print("  PASS: Sanskrit roots are NOT PIE reconstructions")
 print()
 
-print("Bug 2 - Greek empty roots:")
+print("Bug 2a - Greek empty roots:")
 print(f"  Found: {greek_found}, Empty: {greek_empty}")
 if greek_found > 0:
     print("  PASS: Greek adapter is finding roots from wiktextract_roots.pkl")
 else:
     print("  FAIL: Greek adapter still returns empty roots")
+print()
+
+print("Bug 2b - Hebrew empty roots (lookup key mismatch):")
+print(f"  Found: {hebrew_found}, Empty: {hebrew_empty}")
+if hebrew_found > 0:
+    print("  PASS: Hebrew adapter is finding roots from wiktextract_roots.pkl")
+else:
+    print("  FAIL: Hebrew adapter can't find roots despite data in pkl")
 print()
 
 print("Bug 3 - Latin encoding errors:")

@@ -2,6 +2,7 @@
 
 import os
 import pickle
+import unicodedata
 
 from pipeline.wiktextract_loader import load_index
 
@@ -24,16 +25,33 @@ def _load_roots_index():
     return _roots_index
 
 
+def _normalize_greek(word: str) -> str:
+    """Normalize Greek word for matching (remove diacritics/accents)."""
+    # Decompose and remove combining marks
+    normalized = ''.join(
+        c for c in unicodedata.normalize('NFD', word)
+        if unicodedata.category(c) != 'Mn'
+    )
+    return normalized.strip().lower()
+
+
 def _extract_greek_root(word: str, concept: dict) -> str:
     """
     Extract Ancient Greek root from concept data or wiktextract_roots.pkl.
 
     Greek uses a root system similar to other Indo-European languages.
     """
-    # First, try direct lookup in wiktextract_roots.pkl
     roots_index = _load_roots_index()
+
+    # Try direct lookup
     if word in roots_index and roots_index[word]:
-        return roots_index[word][0]  # Return first root
+        return roots_index[word][0]
+
+    # Try normalized lookup
+    word_normalized = _normalize_greek(word)
+    for greek_word, root_list in roots_index.items():
+        if root_list and _normalize_greek(greek_word) == word_normalized:
+            return root_list[0]
 
     # Fallback: Try to get root from etymology_templates if available
     etymology = concept.get('etymology_templates', []) if isinstance(concept, dict) else []
