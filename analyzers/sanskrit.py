@@ -2,6 +2,20 @@
 
 Uses reverse lookup from Sanskrit words to English concepts via precomputed index.
 Sanskrit is a major source language for PIE etymologies.
+
+DATA GAP STATUS (2026-04-08):
+The wiktextract_roots.pkl has 1,044 Sanskrit entries, but these are morphological
+roots (dhatu) for specific Wiktionary entries (e.g., 'बुद्ध' -> 'बुध्' meaning Buddha -> root).
+The forward_translations.pkl provides everyday vocabulary words (e.g., 'हृदय' heart,
+'हस्त' hand) which are NOT the same words as the PKL entries.
+
+This is a DATA GAP like Hebrew, not a fixable lookup mismatch:
+- PKL has: morphological roots for derived/compound words from Wiktionary
+- Forward translations provide: basic vocabulary words
+- These are DIFFERENT words, not different forms of the same words
+
+The adapter will return empty roots for most words until a dedicated Sanskrit
+morphological analyzer (like Sanskrit Heritage or DCS) is integrated.
 """
 
 import os
