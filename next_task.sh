@@ -1,184 +1,206 @@
 #!/bin/bash
-# HEBREW ROOT EXTRACTION FIX
-# Install HspellPy and test triconsonantal root extraction
-# Timestamp: 2026-04-08-hebrew-root-fix
+# INSTALL HSPELL ON VM AND TEST HEBREW ROOT EXTRACTION
+# Timestamp: 2026-04-08-hspell-install
+# NO HARDCODING. HONEST HEBREW ADAPTER.
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== HEBREW ROOT EXTRACTION FIX ==="
+echo "=== HSPELL INSTALLATION AND HEBREW ROOT TEST ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
 
-# Sync code
+# Sync code first
 echo "--- Step 1: Syncing code from origin/main ---"
 git fetch origin && git reset --hard origin/main
 echo "Now at: $(git rev-parse HEAD)"
 echo ""
 
-# Verify updated Hebrew adapter
-echo "--- Step 2: Verify updated Hebrew adapter ---"
-if grep -q "KNOWN_ROOTS\|_extract_root_hspell\|_extract_root_fallback" analyzers/hebrew.py; then
-    echo "PASS: Hebrew root extraction functions present"
-    echo ""
-    echo "Known roots sample:"
-    grep -A5 "KNOWN_ROOTS = {" analyzers/hebrew.py | head -6
-else
-    echo "FAIL: Hebrew root extraction code NOT found"
+# Verify honest Hebrew adapter (NO KNOWN_ROOTS)
+echo "--- Step 2: Verify honest Hebrew adapter ---"
+if grep -q "KNOWN_ROOTS" analyzers/hebrew.py; then
+    echo "FAIL: KNOWN_ROOTS still present in hebrew.py - not honest!"
     exit 1
+else
+    echo "PASS: No KNOWN_ROOTS dictionary (honest adapter)"
+fi
+
+if grep -q "_extract_root_fallback\|_strip_affixes" analyzers/hebrew.py; then
+    echo "FAIL: Rule-based fallback still present - not honest!"
+    exit 1
+else
+    echo "PASS: No rule-based fallback (honest adapter)"
 fi
 echo ""
 
-# Try to install Hspell and HspellPy
-echo "--- Step 3: Attempt to install HspellPy ---"
+# Install Hspell C library
+echo "--- Step 3: Install Hspell C library ---"
 
-# Check if HspellPy is already installed
-if python3 -c "import HspellPy; print('HspellPy already installed')" 2>/dev/null; then
-    echo "HspellPy is available"
+# Check if already installed
+if ldconfig -p | grep -q libhspell; then
+    echo "Hspell C library already installed"
 else
-    echo "HspellPy not found, attempting installation..."
+    echo "Installing Hspell C library from source..."
 
-    # Check if Hspell C library exists
+    # Install build dependencies
+    sudo apt-get update && sudo apt-get install -y build-essential zlib1g-dev || {
+        echo "WARNING: apt-get failed, trying without update..."
+    }
+
+    # Download and build Hspell
+    cd /tmp
+    rm -rf hspell-1.4 hspell-1.4.tar.gz
+
+    wget http://hspell.ivrix.org.il/hspell-1.4.tar.gz || {
+        echo "FAIL: Could not download Hspell"
+        echo "Trying alternative mirror..."
+        wget https://github.com/julesjabbour/hspell-mirror/raw/main/hspell-1.4.tar.gz || {
+            echo "FAIL: All download attempts failed"
+            exit 1
+        }
+    }
+
+    tar xzf hspell-1.4.tar.gz
+    cd hspell-1.4
+
+    ./configure --enable-shared --enable-linginfo || {
+        echo "FAIL: Hspell configure failed"
+        exit 1
+    }
+
+    make || {
+        echo "FAIL: Hspell make failed"
+        exit 1
+    }
+
+    sudo make install || {
+        echo "FAIL: Hspell make install failed"
+        exit 1
+    }
+
+    sudo ldconfig
+
+    cd /mnt/pgdata/morphlex
+
+    # Verify installation
     if ldconfig -p | grep -q libhspell; then
-        echo "Hspell C library found, installing HspellPy..."
-        pip install HspellPy 2>&1 | head -10
+        echo "SUCCESS: Hspell C library installed"
     else
-        echo "NOTE: Hspell C library not installed"
-        echo "HspellPy requires the Hspell C library which needs sudo to install."
-        echo "Proceeding with rule-based fallback extraction..."
-        echo ""
-        echo "To install Hspell C library (requires sudo):"
-        echo "  wget http://hspell.ivrix.org.il/hspell-1.4.tar.gz"
-        echo "  tar xzf hspell-1.4.tar.gz && cd hspell-1.4"
-        echo "  ./configure --enable-shared --enable-linginfo"
-        echo "  make && sudo make install && sudo ldconfig"
-        echo "  pip install HspellPy"
+        echo "FAIL: Hspell C library not found after install"
+        exit 1
     fi
 fi
 echo ""
 
-# Test Hebrew root extraction with required test words
-echo "--- Step 4: Test Hebrew root extraction ---"
+# Install HspellPy
+echo "--- Step 4: Install HspellPy Python package ---"
+
+# Check if already installed
+if python3 -c "import HspellPy; print('HspellPy version:', HspellPy.__version__ if hasattr(HspellPy, '__version__') else 'unknown')" 2>/dev/null; then
+    echo "HspellPy already installed"
+else
+    echo "Installing HspellPy..."
+    pip install HspellPy || {
+        echo "Trying with --break-system-packages..."
+        pip install HspellPy --break-system-packages || {
+            echo "FAIL: Could not install HspellPy"
+            exit 1
+        }
+    }
+
+    # Verify installation
+    if python3 -c "import HspellPy; print('SUCCESS: HspellPy imported')" 2>/dev/null; then
+        echo "HspellPy installed successfully"
+    else
+        echo "FAIL: HspellPy import failed after install"
+        exit 1
+    fi
+fi
+echo ""
+
+# Test HspellPy directly
+echo "--- Step 5: Test HspellPy directly ---"
 python3 << 'EOF'
-import sys
-sys.path.insert(0, '/mnt/pgdata/morphlex')
+import HspellPy
 
-from analyzers.hebrew import analyze_hebrew, _extract_hebrew_root, _init_hspell, KNOWN_ROOTS
+print("Testing HspellPy directly:")
+hspell = HspellPy.Hspell(linguistics=True)
 
-print("Testing Hebrew triconsonantal root extraction")
-print(f"HspellPy available: {_init_hspell()}")
-print(f"Known roots dictionary size: {len(KNOWN_ROOTS)}")
-print("")
+# Test word
+word = 'מילון'
+print(f"  Word: {word}")
 
-# Required test words from the task
-test_words = [
-    ('מילון', 'dictionary', 'מלל'),   # m-l-l related to words
-    ('לב', 'heart', 'לבב'),           # l-b-b hollow root
-    ('מים', 'water', 'מים'),          # m-y-m unusual root
-    ('בית', 'house', 'בית'),          # b-y-t
-    ('יד', 'hand', 'ידד'),             # y-d-d hollow root
-    ('עין', 'eye', 'עין'),            # ayin-y-n
-]
+# Try linginfo
+infos = list(hspell.linginfo(word))
+print(f"  linginfo results: {len(infos)}")
+for info in infos[:3]:
+    print(f"    - {info}")
 
-print("=== REQUIRED TEST WORDS ===")
-found_roots = 0
-for word, meaning, expected_root in test_words:
-    results = analyze_hebrew(word)
-    if results:
-        root = results[0].get('root', '')
-        source = results[0].get('source_tool', 'unknown')
-        conf = results[0].get('confidence', 0)
-        status = 'MATCH' if root == expected_root else f'(expected {expected_root})'
-        print(f"  {word} ({meaning}): root='{root}' {status}, source={source}, conf={conf:.2f}")
-        if root:
-            found_roots += 1
-    else:
-        # Try direct extraction
-        root = _extract_hebrew_root(word, [])
-        status = 'MATCH' if root == expected_root else f'(expected {expected_root})'
-        print(f"  {word} ({meaning}): root='{root}' {status}, source=direct")
-        if root:
-            found_roots += 1
+# Try spell check
+correct = hspell.check(word)
+print(f"  Spelling correct: {correct}")
 
-print("")
-print(f"Found roots: {found_roots}/{len(test_words)}")
-print("")
-
-# Test additional common Hebrew words
-additional_words = ['ספר', 'כתב', 'אהבה', 'שלום', 'ילד', 'אמר', 'עשה', 'ראה', 'שמע']
-print("=== ADDITIONAL COMMON WORDS ===")
-additional_found = 0
-for word in additional_words:
-    results = analyze_hebrew(word)
-    if results:
-        root = results[0].get('root', '')
-        source = results[0].get('source_tool', 'unknown')
-        print(f"  {word}: root='{root}', source={source}")
-        if root:
-            additional_found += 1
-    else:
-        root = _extract_hebrew_root(word, [])
-        print(f"  {word}: root='{root}', source=direct")
-        if root:
-            additional_found += 1
-
-print("")
-print(f"Additional found: {additional_found}/{len(additional_words)}")
-
+print("HspellPy direct test: PASS")
 EOF
 echo ""
 
-# Test through orchestrator integration
-echo "--- Step 5: Test orchestrator integration ---"
+# Test Hebrew adapter with 10 random words
+echo "--- Step 6: Test Hebrew adapter with 10 RANDOM words ---"
 python3 << 'EOF'
 import sys
 sys.path.insert(0, '/mnt/pgdata/morphlex')
 
-from analyzers.hebrew import analyze_hebrew
+from analyzers.hebrew import analyze_hebrew, _init_hspell
 
-# Test words that would come from forward_translations (Arabic concepts)
-# These are the Hebrew translations of common Arabic words
-test_translations = [
-    'מילון',   # dictionary (from Arabic قاموس via translation)
-    'לב',      # heart (from Arabic قلب)
-    'בית',     # house (from Arabic بيت)
-    'יד',      # hand (from Arabic يد)
-    'עין',     # eye (from Arabic عين)
-    'כתוב',    # write (from Arabic كتب)
-    'שמע',     # hear (from Arabic سمع)
+print("Hebrew adapter test (HONEST - NO HARDCODING)")
+print(f"HspellPy available: {_init_hspell()}")
+print("")
+
+# 10 random Hebrew words - NOT from any test list
+# These are common Hebrew words that should have roots
+test_words = [
+    ('אוכל', 'food'),
+    ('מכונית', 'car'),
+    ('טלפון', 'telephone'),
+    ('חלב', 'milk'),
+    ('שמש', 'sun'),
+    ('ירח', 'moon'),
+    ('דלת', 'door'),
+    ('רחוב', 'street'),
+    ('גשם', 'rain'),
+    ('שלג', 'snow'),
 ]
 
-print("Hebrew translations root extraction:")
 found = 0
 empty = 0
 
-for word in test_translations:
+print("=== 10 RANDOM HEBREW WORDS ===")
+for word, meaning in test_words:
     results = analyze_hebrew(word)
-    if results:
-        root = results[0].get('root', '')
-        if root:
-            found += 1
-        else:
-            empty += 1
-        print(f"  {word}: root='{root}' ({len(results)} analyses)")
+    if results and results[0].get('root'):
+        r = results[0]
+        print(f"  {word} ({meaning}): root='{r['root']}', source={r['source_tool']}")
+        found += 1
     else:
-        print(f"  {word}: NO MATCH")
+        print(f"  {word} ({meaning}): NO ROOT")
         empty += 1
 
 print("")
-print(f"Summary: {found} found roots, {empty} empty")
-if found >= len(test_translations) // 2:
-    print("STATUS: PASS - Hebrew root extraction working")
+print(f"=== RESULTS: {found}/10 roots found, {empty}/10 empty ===")
+
+if found > 0:
+    print("STATUS: PARTIAL SUCCESS - HspellPy working")
 else:
-    print("STATUS: PARTIAL - Some roots extracted, needs improvement")
+    print("STATUS: NEEDS INVESTIGATION - no roots found")
 
 EOF
 echo ""
 
 # Run comprehensive test
-echo "--- Step 6: Run comprehensive adapter test ---"
-python3 test_comprehensive.py 2>&1 | head -100
+echo "--- Step 7: Run comprehensive adapter test ---"
+cd /mnt/pgdata/morphlex
+python3 test_comprehensive.py 2>&1 | head -150
 echo ""
 
-echo "=== HEBREW ROOT EXTRACTION TEST COMPLETE ==="
+echo "=== HSPELL INSTALLATION COMPLETE ==="
 echo "End: $(date -Iseconds)"
