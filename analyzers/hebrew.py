@@ -13,20 +13,29 @@ from pipeline.wiktextract_loader import load_index
 # Module-level cache for loaded index
 _hebrew_index: Optional[dict] = None
 _roots_index: Optional[dict] = None
+_normalized_lookup: Optional[dict] = None  # {normalized_key: original_key}
 
 ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
 
 
 def _load_roots_index():
-    """Load wiktextract_roots.pkl and return Hebrew roots."""
-    global _roots_index
+    """Load wiktextract_roots.pkl and return Hebrew roots with normalized lookup."""
+    global _roots_index, _normalized_lookup
     if _roots_index is None:
         if os.path.exists(ROOTS_PKL_PATH):
             with open(ROOTS_PKL_PATH, 'rb') as f:
                 all_roots = pickle.load(f)
             _roots_index = all_roots.get('he', {})
+            # Build normalized lookup table for efficient matching
+            # PKL keys may have niqqud, translations may not
+            _normalized_lookup = {}
+            for hebrew_word in _roots_index:
+                norm = _normalize_hebrew(hebrew_word)
+                if norm not in _normalized_lookup:
+                    _normalized_lookup[norm] = hebrew_word
         else:
             _roots_index = {}
+            _normalized_lookup = {}
     return _roots_index
 
 
@@ -57,21 +66,20 @@ def _extract_hebrew_root(word: str, etymology_links: list) -> str:
 
     Hebrew uses a triconsonantal root system similar to Arabic.
     """
+    global _normalized_lookup
     roots_index = _load_roots_index()
 
     # Try direct lookup
     if word in roots_index and roots_index[word]:
         return roots_index[word][0]
 
-    # Try normalized lookup (remove niqqud)
+    # Try normalized lookup via precomputed table (O(1) instead of O(n))
+    # PKL keys may have niqqud, translations from forward_translations may not
     word_normalized = _normalize_hebrew(word)
-    if word_normalized != word and word_normalized in roots_index and roots_index[word_normalized]:
-        return roots_index[word_normalized][0]
-
-    # Try searching through index for normalized match
-    for hebrew_word, root_list in roots_index.items():
-        if root_list and _normalize_hebrew(hebrew_word) == word_normalized:
-            return root_list[0]
+    if _normalized_lookup and word_normalized in _normalized_lookup:
+        original_key = _normalized_lookup[word_normalized]
+        if roots_index.get(original_key):
+            return roots_index[original_key][0]
 
     # Fallback: Look for root info in etymology
     for link in etymology_links:

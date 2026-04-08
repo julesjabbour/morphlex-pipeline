@@ -14,20 +14,29 @@ from pipeline.wiktextract_loader import load_index
 # Module-level cache for loaded index
 _sanskrit_index: Optional[dict] = None
 _roots_index: Optional[dict] = None
+_normalized_lookup: Optional[dict] = None  # {normalized_key: original_key}
 
 ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
 
 
 def _load_roots_index():
-    """Load wiktextract_roots.pkl and return Sanskrit roots."""
-    global _roots_index
+    """Load wiktextract_roots.pkl and return Sanskrit roots with normalized lookup."""
+    global _roots_index, _normalized_lookup
     if _roots_index is None:
         if os.path.exists(ROOTS_PKL_PATH):
             with open(ROOTS_PKL_PATH, 'rb') as f:
                 all_roots = pickle.load(f)
             _roots_index = all_roots.get('sa', {})
+            # Build normalized lookup table for efficient matching
+            # PKL keys may have diacritics, translations may not
+            _normalized_lookup = {}
+            for sanskrit_word in _roots_index:
+                norm = _normalize_sanskrit(sanskrit_word)
+                if norm not in _normalized_lookup:
+                    _normalized_lookup[norm] = sanskrit_word
         else:
             _roots_index = {}
+            _normalized_lookup = {}
     return _roots_index
 
 
@@ -58,10 +67,19 @@ def _extract_sanskrit_root(word: str, etymology_links: list) -> str:
 
     Sanskrit uses a root (dhatu) system.
     """
+    global _normalized_lookup
     # First, try direct lookup in wiktextract_roots.pkl
     roots_index = _load_roots_index()
     if word in roots_index and roots_index[word]:
         return roots_index[word][0]  # Return first root
+
+    # Try normalized lookup via precomputed table (O(1) instead of O(n))
+    # PKL keys may have diacritics, translations may not
+    word_normalized = _normalize_sanskrit(word)
+    if _normalized_lookup and word_normalized in _normalized_lookup:
+        original_key = _normalized_lookup[word_normalized]
+        if roots_index.get(original_key):
+            return roots_index[original_key][0]
 
     # Fallback: Look for root info in etymology
     for link in etymology_links:

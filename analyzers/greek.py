@@ -8,20 +8,29 @@ from pipeline.wiktextract_loader import load_index
 
 _index = None
 _roots_index = None
+_normalized_lookup = None  # {normalized_key: original_key}
 
 ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
 
 
 def _load_roots_index():
-    """Load wiktextract_roots.pkl and return Greek roots."""
-    global _roots_index
+    """Load wiktextract_roots.pkl and return Greek roots with normalized lookup."""
+    global _roots_index, _normalized_lookup
     if _roots_index is None:
         if os.path.exists(ROOTS_PKL_PATH):
             with open(ROOTS_PKL_PATH, 'rb') as f:
                 all_roots = pickle.load(f)
             _roots_index = all_roots.get('grc', {})
+            # Build normalized lookup table for efficient matching
+            # PKL keys may have diacritics, translations may not
+            _normalized_lookup = {}
+            for greek_word in _roots_index:
+                norm = _normalize_greek(greek_word)
+                if norm not in _normalized_lookup:
+                    _normalized_lookup[norm] = greek_word
         else:
             _roots_index = {}
+            _normalized_lookup = {}
     return _roots_index
 
 
@@ -40,14 +49,17 @@ def _extract_greek_root(word: str, concept: dict) -> str:
     Extract Ancient Greek root from concept data or wiktextract_roots.pkl.
 
     Greek uses a root system similar to other Indo-European languages.
+    Note: Greek roots may include PIE-derived forms - this is valid for Greek.
     """
+    global _normalized_lookup
     roots_index = _load_roots_index()
 
     def is_pie_reconstruction(root_str):
-        """Check if root is a PIE reconstruction (starts with * or has PIE chars)."""
+        """Check if root is a PIE reconstruction (starts with *)."""
         if not root_str:
             return False
-        return root_str.startswith('*') or any(c in root_str for c in ['ḱ', 'ǵ', 'ʰ', 'ʷ', '₂', '₃'])
+        # Only filter out explicit reconstructions marked with *
+        return root_str.startswith('*')
 
     # Try direct lookup
     if word in roots_index and roots_index[word]:
@@ -55,11 +67,12 @@ def _extract_greek_root(word: str, concept: dict) -> str:
         if not is_pie_reconstruction(root):
             return root
 
-    # Try normalized lookup
+    # Try normalized lookup via precomputed table (O(1) instead of O(n))
     word_normalized = _normalize_greek(word)
-    for greek_word, root_list in roots_index.items():
-        if root_list and _normalize_greek(greek_word) == word_normalized:
-            root = root_list[0]
+    if _normalized_lookup and word_normalized in _normalized_lookup:
+        original_key = _normalized_lookup[word_normalized]
+        if roots_index.get(original_key):
+            root = roots_index[original_key][0]
             if not is_pie_reconstruction(root):
                 return root
 

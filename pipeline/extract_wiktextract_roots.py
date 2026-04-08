@@ -24,29 +24,10 @@ OUTPUT_FILE = os.path.join(DATA_DIR, 'wiktextract_roots.pkl')
 # Languages we care about (entry languages)
 TARGET_LANGUAGES = {'he', 'sa', 'grc', 'ar', 'la', 'en', 'de', 'tr', 'zh', 'ja', 'ine-pro'}
 
-# PIE diacritics that indicate a reconstructed root
-# These are NOT found in real Semitic/Sanskrit/Greek consonantal roots
-PIE_DIACRITICS = {'ḱ', 'ǵ', 'ʰ', 'ʷ', '₁', '₂', '₃', 'h₁', 'h₂', 'h₃', 'ḗ', 'ṓ'}
-
-
-def looks_like_pie_root(root_str: str) -> bool:
-    """
-    Check if a root looks like a PIE reconstruction rather than a native root.
-
-    Content-based filter - more reliable than checking source_lang metadata.
-    PIE roots typically: start with *, contain laryngeals (h₁/h₂/h₃), or use PIE diacritics.
-    Native Semitic roots like k-t-b or Hebrew consonantal roots don't have these.
-    """
-    if not root_str:
-        return False
-    # Check if any part starts with * (reconstruction marker)
-    if root_str.startswith('*') or '-*' in root_str:
-        return True
-    # Check for PIE diacritics
-    for diac in PIE_DIACRITICS:
-        if diac in root_str:
-            return True
-    return False
+# Languages that need ONLY native roots (no PIE reconstructions)
+# Hebrew, Sanskrit, Arabic have their own root systems - PIE roots contaminate their data
+# Other languages (Greek, Latin, English, etc.) can keep all roots including PIE-derived
+NATIVE_ROOT_ONLY = {'he', 'sa', 'ar'}
 
 
 def extract_roots():
@@ -116,11 +97,18 @@ def extract_roots():
                     # Store as joined root (e.g., "k-t-b" for triconsonantal)
                     root_str = '-'.join(root_parts)
 
-                    # Content-based PIE filter: skip roots that look like PIE reconstructions
-                    # This is more reliable than checking source_lang metadata
-                    # Native Semitic roots (k-t-b) pass; PIE roots (*ḱerd-) get filtered
-                    if looks_like_pie_root(root_str):
-                        continue
+                    # PIE filter: ONLY for languages that need native-only roots
+                    # Hebrew, Sanskrit, Arabic have their own root systems
+                    # Other languages (Greek, Latin, etc.) keep ALL roots
+                    if lang_code in NATIVE_ROOT_ONLY:
+                        # Get source language from template metadata
+                        source_lang = args.get('2', '').strip()
+                        # Skip if source language is PIE
+                        if source_lang == 'ine-pro':
+                            continue
+                        # Skip if root has PIE reconstruction marker
+                        if root_str.startswith('*'):
+                            continue
 
                     # Index by entry language (so adapters can look up words)
                     if root_str not in roots_index[lang_code][word]:
