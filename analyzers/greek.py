@@ -1,12 +1,10 @@
-"""Ancient Greek morphological analyzer using Wiktextract (primary).
+"""Ancient Greek morphological analyzer using Morpheus (primary) + Wiktextract fallback.
 
-NOTE: Morpheus Greek endpoint returns empty responses - the Greek lexicon
-appears to not be loaded in the Docker container. Morpheus works for Latin
-but not Greek. This is a TOOL LIMITATION like Hebrew (no HebMorph) and
-Sanskrit (no Sanskrit Heritage).
+Morpheus Greek endpoint requires Beta Code input (ASCII encoding of Greek).
+Example: γράφω = gra/fw, ἄνθρωπος = a)/nqrwpos
 
-STATUS: Greek roots come from wiktextract_roots.pkl only.
-When pkl lookup fails, return empty root (not the input word).
+STATUS: Greek analysis via Morpheus with Beta Code conversion.
+Fallback to wiktextract_roots.pkl if Morpheus unavailable.
 Zero error suppression - empty is honest, fake roots are not.
 """
 
@@ -30,9 +28,65 @@ MORPHEUS_GREEK_URL = 'http://localhost:1315/greek/'
 # Debug flag - set to True to see Morpheus responses
 _DEBUG_MORPHEUS = True
 
+# Beta Code mapping: Unicode Greek -> ASCII
+# Lowercase letters
+_BETA_LETTERS = {
+    'α': 'a', 'β': 'b', 'γ': 'g', 'δ': 'd', 'ε': 'e', 'ζ': 'z', 'η': 'h',
+    'θ': 'q', 'ι': 'i', 'κ': 'k', 'λ': 'l', 'μ': 'm', 'ν': 'n', 'ξ': 'c',
+    'ο': 'o', 'π': 'p', 'ρ': 'r', 'σ': 's', 'ς': 's', 'τ': 't', 'υ': 'u',
+    'φ': 'f', 'χ': 'x', 'ψ': 'y', 'ω': 'w',
+    # Uppercase (prefixed with *)
+    'Α': '*a', 'Β': '*b', 'Γ': '*g', 'Δ': '*d', 'Ε': '*e', 'Ζ': '*z', 'Η': '*h',
+    'Θ': '*q', 'Ι': '*i', 'Κ': '*k', 'Λ': '*l', 'Μ': '*m', 'Ν': '*n', 'Ξ': '*c',
+    'Ο': '*o', 'Π': '*p', 'Ρ': '*r', 'Σ': '*s', 'Τ': '*t', 'Υ': '*u',
+    'Φ': '*f', 'Χ': '*x', 'Ψ': '*y', 'Ω': '*w',
+}
+
+# Diacritics in NFD form (combining characters)
+_BETA_DIACRITICS = {
+    '\u0301': '/',   # acute accent (oxia/tonos)
+    '\u0300': '\\',  # grave accent (varia)
+    '\u0342': '=',   # circumflex (perispomeni)
+    '\u0314': '(',   # rough breathing (dasia)
+    '\u0313': ')',   # smooth breathing (psili)
+    '\u0308': '+',   # dieresis
+    '\u0345': '|',   # iota subscript (ypogegrammeni)
+    '\u0304': '_',   # macron (if present)
+    '\u0306': '^',   # breve (if present)
+}
+
+
+def _greek_to_beta_code(text: str) -> str:
+    """
+    Convert Unicode Greek text to Beta Code for Morpheus.
+
+    Beta Code is the ASCII encoding used by Perseus/Morpheus.
+    Diacritics are placed AFTER the letter they modify.
+
+    Examples:
+        γράφω -> gra/fw
+        ἄνθρωπος -> a)/nqrwpos
+        λόγος -> lo/gos
+    """
+    # Normalize to NFD to separate base characters from combining marks
+    nfd = unicodedata.normalize('NFD', text)
+
+    result = []
+    for char in nfd:
+        if char in _BETA_LETTERS:
+            result.append(_BETA_LETTERS[char])
+        elif char in _BETA_DIACRITICS:
+            result.append(_BETA_DIACRITICS[char])
+        elif char.isascii():
+            # Keep ASCII characters (spaces, punctuation)
+            result.append(char)
+        # Skip unknown combining marks silently
+
+    return ''.join(result)
+
 
 def _strip_diacritics(text: str) -> str:
-    """Remove diacritics/accents from text for Morpheus lookup."""
+    """Remove diacritics/accents from text (used for pkl lookup fallback)."""
     return ''.join(
         c for c in unicodedata.normalize('NFD', text)
         if unicodedata.category(c) != 'Mn'
@@ -43,6 +97,9 @@ def _query_morpheus_greek(word: str) -> list[dict]:
     """
     Query Morpheus REST API for Ancient Greek morphological analysis.
 
+    CRITICAL: Morpheus expects Beta Code input, not UTF-8 Greek!
+    Example: γράφω must be sent as gra/fw
+
     Morpheus returns custom text format with analyses in angle brackets.
     Greek Morpheus may return different formats than Latin:
     - <NL>...</NL> blocks (like Latin)
@@ -50,7 +107,7 @@ def _query_morpheus_greek(word: str) -> list[dict]:
     - Plain lemma lines
 
     Args:
-        word: Greek word to analyze
+        word: Greek word to analyze (Unicode)
 
     Returns:
         List of analysis dicts from Morpheus
@@ -58,17 +115,21 @@ def _query_morpheus_greek(word: str) -> list[dict]:
     results = []
 
     try:
-        # Strip diacritics for Morpheus lookup
-        clean_word = _strip_diacritics(word)
         # Handle multi-word translations: take only the first word
-        if ' ' in clean_word:
-            clean_word = clean_word.split()[0]
+        clean_word = word.split()[0] if ' ' in word else word
         if not clean_word:
             return results
 
-        # URL-encode Greek characters (Morpheus expects UTF-8 encoded URLs)
-        encoded_word = urllib.parse.quote(clean_word, safe='')
+        # CRITICAL: Convert Unicode Greek to Beta Code (ASCII)
+        # Morpheus expects Beta Code, NOT UTF-8 Greek characters!
+        beta_word = _greek_to_beta_code(clean_word)
+
+        # URL-encode Beta Code (escape /, \, etc. which have special meaning)
+        encoded_word = urllib.parse.quote(beta_word, safe='')
         url = f"{MORPHEUS_GREEK_URL}{encoded_word}"
+
+        if _DEBUG_MORPHEUS:
+            print(f"[DEBUG] Morpheus Greek: '{word}' -> beta '{beta_word}' -> url '{url}'")
 
         with urllib.request.urlopen(url, timeout=5) as response:
             text_data = response.read().decode('utf-8')
@@ -76,7 +137,7 @@ def _query_morpheus_greek(word: str) -> list[dict]:
         if _DEBUG_MORPHEUS:
             # Print first 500 chars of response for debugging
             preview = text_data[:500].replace('\n', '\\n')
-            print(f"[DEBUG] Morpheus Greek response for '{word}' (clean: '{clean_word}'): {preview}")
+            print(f"[DEBUG] Morpheus Greek response for '{word}': {preview}")
 
         # Try multiple parsing strategies for Morpheus response
 

@@ -1,114 +1,102 @@
 #!/bin/bash
-# GREEK LEXICON DIAGNOSTIC - Find how to load Greek into Morpheus
-# Goal: Inspect Morpheus Docker container, find Latin lexicon config, locate Greek lexicon
-# Timestamp: 2026-04-08-greek-lexicon-diagnostic
+# FIX: Greek Morpheus - Convert to Beta Code
+# Root cause: Morpheus expects Beta Code (ASCII), not UTF-8 Greek
+# Example: γράφω must be sent as gra/fw
+# Timestamp: 2026-04-08-greek-beta-code-fix
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== MORPHEUS GREEK LEXICON DIAGNOSTIC ==="
+echo "=== GREEK MORPHEUS FIX: BETA CODE CONVERSION ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
 
-# Step 1: Find Morpheus container
-echo "--- Step 1: Docker containers ---"
-docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Ports}}" 2>&1
+# Sync code
+echo "--- Step 1: Syncing code from origin/main ---"
+git fetch origin && git reset --hard origin/main
+echo "Now at: $(git rev-parse HEAD)"
 echo ""
 
-echo "--- Step 2: Find Morpheus container name ---"
-MORPHEUS_CONTAINER=$(docker ps --format '{{.Names}}' | grep -i morph || docker ps --format '{{.ID}}' | head -1)
-echo "Morpheus container: $MORPHEUS_CONTAINER"
+# Show the Beta Code fix
+echo "--- Step 2: Verify Beta Code conversion added ---"
+if grep -q "_greek_to_beta_code\|_BETA_LETTERS" analyzers/greek.py; then
+    echo "PASS: Beta Code conversion function present"
+    echo ""
+    echo "Beta Code mapping preview:"
+    grep -A5 "_BETA_LETTERS = {" analyzers/greek.py | head -6
+else
+    echo "FAIL: Beta Code conversion NOT found in greek.py"
+    exit 1
+fi
 echo ""
 
-# Step 3: Inspect container
-echo "--- Step 3: Container inspection ---"
-docker inspect "$MORPHEUS_CONTAINER" 2>&1 | head -100
+# Test Beta Code conversion directly
+echo "--- Step 3: Test Beta Code conversion ---"
+python3 -c "
+from analyzers.greek import _greek_to_beta_code
+
+test_words = [
+    ('γράφω', 'gra/fw'),
+    ('λόγος', 'lo/gos'),
+    ('ἄνθρωπος', 'a)/nqrwpos'),
+    ('καρδία', 'kardi/a'),
+    ('οἶκος', 'oi)=kos'),
+]
+
+print('Unicode -> Beta Code conversion:')
+for greek, expected in test_words:
+    beta = _greek_to_beta_code(greek)
+    status = 'OK' if beta == expected else f'UNEXPECTED (expected {expected})'
+    print(f'  {greek} -> {beta} [{status}]')
+"
 echo ""
 
-# Step 4: Check what's inside the container
-echo "--- Step 4: Container filesystem - looking for lexicons ---"
-echo "Looking for any .lex, .dat, .bin, .txt files in common locations..."
-docker exec "$MORPHEUS_CONTAINER" find /app /data /opt /home /var /usr/local -maxdepth 4 -type f \( -name "*.lex" -o -name "*.dat" -o -name "*.bin" -o -name "*greek*" -o -name "*latin*" -o -name "*stemlib*" \) 2>/dev/null | head -50
+# Test Morpheus endpoints directly
+echo "--- Step 4: Direct Morpheus API test ---"
+echo "Latin 'scribo' (baseline - should work):"
+curl -s "http://localhost:1315/latin/scribo" | head -c 400
+echo ""
 echo ""
 
-# Step 5: Check Morpheus source directory
-echo "--- Step 5: Morpheus app structure ---"
-docker exec "$MORPHEUS_CONTAINER" ls -la /app 2>/dev/null || docker exec "$MORPHEUS_CONTAINER" ls -la / 2>/dev/null | head -30
+echo "Greek with Beta Code: gra/fw (γράφω):"
+# Note: / needs to be URL-encoded as %2F
+curl -s "http://localhost:1315/greek/gra%2Ffw" | head -c 400
+echo ""
 echo ""
 
-# Step 6: Look for stemlib or lexicon directories
-echo "--- Step 6: Stemlib directory search ---"
-docker exec "$MORPHEUS_CONTAINER" find / -type d -name "stemlib*" 2>/dev/null | head -10
-docker exec "$MORPHEUS_CONTAINER" find / -type d -name "*lexicon*" 2>/dev/null | head -10
-docker exec "$MORPHEUS_CONTAINER" find / -type d -name "*greek*" 2>/dev/null | head -10
+echo "Greek with Beta Code: lo/gos (λόγος):"
+curl -s "http://localhost:1315/greek/lo%2Fgos" | head -c 400
+echo ""
 echo ""
 
-# Step 7: Check container entrypoint/command
-echo "--- Step 7: Container startup command ---"
-docker inspect --format='{{.Config.Cmd}}' "$MORPHEUS_CONTAINER" 2>&1
-docker inspect --format='{{.Config.Entrypoint}}' "$MORPHEUS_CONTAINER" 2>&1
+echo "Greek with Beta Code: a)nqrwpos (ἄνθρωπος, no accent):"
+curl -s "http://localhost:1315/greek/a%29nqrwpos" | head -c 400
+echo ""
 echo ""
 
-# Step 8: Check environment variables
-echo "--- Step 8: Environment variables ---"
-docker exec "$MORPHEUS_CONTAINER" env 2>&1 | grep -iE "morph|lex|greek|latin|stem|data" || echo "(no relevant env vars)"
+# Test through the adapter
+echo "--- Step 5: Test Greek adapter with Beta Code ---"
+python3 -c "
+from analyzers.greek import analyze_greek
+
+test_words = ['γράφω', 'λόγος', 'καρδία', 'οἶκος', 'ἀγάπη']
+
+print('Greek adapter test results:')
+for word in test_words:
+    results = analyze_greek(word)
+    if results:
+        roots = [r.get('root', '') or r.get('lemma', '') for r in results]
+        source = results[0].get('source_tool', 'unknown')
+        print(f'  {word}: {len(results)} results, roots={roots[:3]}, source={source}')
+    else:
+        print(f'  {word}: NO RESULTS')
+"
 echo ""
 
-# Step 9: Check if there's a config file
-echo "--- Step 9: Config files ---"
-docker exec "$MORPHEUS_CONTAINER" cat /app/config.json 2>/dev/null || echo "(no /app/config.json)"
-docker exec "$MORPHEUS_CONTAINER" cat /app/config.yml 2>/dev/null || echo "(no /app/config.yml)"
-docker exec "$MORPHEUS_CONTAINER" cat /app/settings.json 2>/dev/null || echo "(no /app/settings.json)"
-echo ""
+# Run comprehensive test
+echo "--- Step 6: Comprehensive adapter test ---"
+python3 test_comprehensive.py
 
-# Step 10: Check container mounts/volumes
-echo "--- Step 10: Volume mounts ---"
-docker inspect --format='{{json .Mounts}}' "$MORPHEUS_CONTAINER" 2>&1 | python3 -m json.tool || echo "(no mounts or parse error)"
 echo ""
-
-# Step 11: Direct file exploration
-echo "--- Step 11: Root directory structure ---"
-docker exec "$MORPHEUS_CONTAINER" ls -la / 2>&1 | head -30
-echo ""
-
-echo "--- Step 12: Find all directories with 'lat' or 'grc' or 'greek' ---"
-docker exec "$MORPHEUS_CONTAINER" find / -maxdepth 5 -type d \( -name "*lat*" -o -name "*grc*" -o -name "*greek*" \) 2>/dev/null | head -20
-echo ""
-
-# Step 13: Look for Morpheus Python code
-echo "--- Step 13: Python files in container ---"
-docker exec "$MORPHEUS_CONTAINER" find / -name "*.py" -type f 2>/dev/null | head -20
-echo ""
-
-# Step 14: Check if there's an API or config for loading lexicons
-echo "--- Step 14: API endpoints check ---"
-echo "Test Latin (should work):"
-curl -s "http://localhost:1315/latin/scribo" | head -c 500
-echo ""
-echo ""
-echo "Test Greek (expected empty):"
-curl -s "http://localhost:1315/greek/γραφω" | head -c 500 || echo "(empty or error)"
-echo ""
-echo ""
-echo "Test root endpoint:"
-curl -s "http://localhost:1315/" | head -c 500 || echo "(no root endpoint)"
-echo ""
-echo ""
-echo "Test /status or /health:"
-curl -s "http://localhost:1315/status" | head -c 200 || echo "(no status)"
-curl -s "http://localhost:1315/health" | head -c 200 || echo "(no health)"
-echo ""
-
-# Step 15: Check if there's a languages endpoint
-echo "--- Step 15: Check for /languages endpoint ---"
-curl -s "http://localhost:1315/languages" | head -c 500 || echo "(no languages endpoint)"
-echo ""
-
-# Step 16: Docker image details
-echo "--- Step 16: Docker image ---"
-docker inspect --format='{{.Config.Image}}' "$MORPHEUS_CONTAINER" 2>&1
-docker image ls 2>&1 | grep -i morph
-echo ""
-
-echo "=== DIAGNOSTIC COMPLETE ==="
+echo "=== GREEK FIX TEST COMPLETE ==="
 echo "End: $(date -Iseconds)"

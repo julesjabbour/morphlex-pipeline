@@ -10,12 +10,12 @@ Expected results:
 - la: roots from Morpheus (working)
 - zh: roots from CEDICT/IDS (working)
 - ja: roots from MeCab (working)
-- grc: empty (TOOL LIMITATION - Morpheus Greek lexicon not loaded, pkl coverage low)
+- grc: roots from Morpheus via Beta Code conversion (FIXED - was returning empty)
 - he: empty (DATA GAP - 7 entries in pkl, awaiting HebMorph integration)
 - sa: empty (DATA GAP - PKL has different vocabulary than translations)
 - ine-pro: no translations (EXPECTED)
 
-Note: grc/he/sa returning empty is HONEST. Returning the input word as root is FAKE.
+Note: he/sa returning empty is HONEST. Returning the input word as root is FAKE.
 """
 
 import os
@@ -153,15 +153,15 @@ def run_test():
     print("\n=== ADAPTER VERIFICATION ===")
     print()
 
-    # Greek verification (EXPECTED: empty - tool limitation)
+    # Greek verification (EXPECTED: results from Morpheus via Beta Code)
     grc_stats = lang_stats['grc']
-    print(f"Greek adapter (EXPECTED: empty - Morpheus Greek lexicon not available):")
+    print(f"Greek adapter (via Morpheus with Beta Code conversion):")
     print(f"  Found roots: {grc_stats['found']}, Empty: {grc_stats['empty']}")
-    if grc_stats['empty'] > 0 and grc_stats['found'] == 0:
-        print("  OK: Greek roots empty as expected (Morpheus returns nothing for Greek)")
-        print("  TOOL LIMITATION: Morpheus Docker has Latin lexicon but Greek lexicon not loaded")
-    elif grc_stats['found'] > 0:
-        print(f"  NOTE: Greek found {grc_stats['found']} roots from wiktextract pkl (unexpected bonus)")
+    if grc_stats['found'] > 0:
+        print("  PASS: Greek roots working via Morpheus Beta Code conversion!")
+    elif grc_stats['empty'] > 0 and grc_stats['found'] == 0:
+        print("  FAIL: Greek still returning empty - Beta Code fix may not be working")
+        print("  Check: Is Morpheus container running? Is Beta Code conversion correct?")
     print()
 
     # Hebrew verification (expected empty - data gap)
