@@ -132,15 +132,14 @@ def _parse_hspell_linginfo(output: str, word: str) -> tuple[str, dict]:
     """
     Parse hspell -l linguistic info output to extract base word/root.
 
-    Hspell -l output format (with linginfo support):
-    - Shows prefix + base word splits
-    - For inflected words: shows base word + grammatical annotations
-    - Annotations are comma-separated in Hebrew (gender, number, tense, etc.)
+    ACTUAL hspell -l output format:
+    מילה חוקית: כתבתי
+        כתב(פ,1,יחיד,עבר)
 
-    Examples of expected formats:
-    - "ה+מילון (שם עצם,יחיד,זכר)" - prefix + base with analysis
-    - "מילון (שם עצם,יחיד,זכר)" - base word with analysis
-    - "מילון" - just the word if recognized
+    Where:
+    - "מילה חוקית:" means "valid word:" - it's a HEADER, not the root
+    - The root is on the INDENTED line, first word before parentheses
+    - כתב is the root (lemma), (פ,1,יחיד,עבר) is grammatical analysis
 
     Returns: (base_word, info_dict)
     """
@@ -153,74 +152,60 @@ def _parse_hspell_linginfo(output: str, word: str) -> tuple[str, dict]:
     base_words = []
 
     for line in lines:
-        line = line.strip()
-        if not line:
+        original_line = line
+        line_stripped = line.strip()
+        if not line_stripped:
             continue
 
+        # Skip "מילה חוקית:" header lines - these just say "valid word", not the root
+        if line_stripped.startswith('מילה חוקית'):
+            morph_info['word_valid'] = True
+            continue
+
+        # INDENTED lines contain the actual analysis
+        # Format: "    כתב(פ,1,יחיד,עבר)" - root followed by grammatical info in parens
+        is_indented = original_line.startswith(' ') or original_line.startswith('\t')
+
+        if is_indented:
+            # Extract first Hebrew word before the parentheses - that's the root/lemma
+            # Pattern: Hebrew letters followed by optional parenthetical analysis
+            match = re.match(r'\s*([\u05D0-\u05EA]+)\s*(?:\(([^)]*)\))?', original_line)
+            if match:
+                candidate = match.group(1)
+                analysis = match.group(2) if match.group(2) else ''
+                if candidate:
+                    base_words.append(candidate)
+                    if analysis:
+                        morph_info['analysis'] = analysis
+                    morph_info['source'] = 'indented_analysis_line'
+                    continue
+
         # Check for prefix+word format: "ה+מילון" or "ב+בית"
-        # The + sign indicates prefix split
-        if '+' in line:
-            parts = line.split('+')
+        if '+' in line_stripped:
+            parts = line_stripped.split('+')
             if len(parts) >= 2:
-                # The part after + is the base word (possibly with annotations)
                 base_part = parts[-1].strip()
-                # Remove parenthetical annotations if present
                 base_part = re.sub(r'\s*\([^)]*\)', '', base_part).strip()
                 if base_part and any('\u05D0' <= c <= '\u05EA' for c in base_part):
                     base_words.append(base_part)
                     morph_info['prefix'] = '+'.join(parts[:-1])
                     morph_info['has_prefix_split'] = True
 
-        # Check for word with parenthetical analysis: "מילון (שם עצם,יחיד)"
-        paren_match = re.match(r'([\u05D0-\u05EA]+)\s*\(([^)]+)\)', line)
-        if paren_match:
-            candidate = paren_match.group(1)
-            analysis = paren_match.group(2)
-            morph_info['analysis'] = analysis
-            if candidate and candidate != word and not base_words:
-                base_words.append(candidate)
-            elif candidate == word:
-                # The word itself is recognized with analysis - it's its own base
-                morph_info['word_recognized'] = True
-                # Return the word itself since it's recognized as valid
-                if not base_words:
-                    base_words.append(word)
-
-        # Try tab-separated format: word\tanalysis
-        if '\t' in line and not base_words:
-            parts = line.split('\t')
-            if len(parts) >= 2:
-                candidate = parts[0].strip()
-                if candidate and candidate != word and any('\u05D0' <= c <= '\u05EA' for c in candidate):
+        # Non-indented line with Hebrew word + parenthetical analysis
+        if not is_indented and not base_words:
+            paren_match = re.match(r'([\u05D0-\u05EA]+)\s*\(([^)]+)\)', line_stripped)
+            if paren_match:
+                candidate = paren_match.group(1)
+                analysis = paren_match.group(2)
+                # Skip if it's the "valid word" label
+                if candidate != 'מילה' and candidate != 'חוקית':
+                    morph_info['analysis'] = analysis
                     base_words.append(candidate)
-                    morph_info['analysis'] = parts[1]
 
-        # Try colon-separated: baseword:analysis
-        if ':' in line and not base_words:
-            parts = line.split(':')
-            candidate = parts[0].strip()
-            if candidate and candidate != word and any('\u05D0' <= c <= '\u05EA' for c in candidate):
-                base_words.append(candidate)
-
-        # Extract any Hebrew words from the line as fallback
-        # BUT exclude words inside parentheses (those are grammatical terms like שם עצם)
-        if not base_words:
-            # Remove parenthetical content first
-            line_no_parens = re.sub(r'\([^)]*\)', '', line)
-            hebrew_words = re.findall(r'[\u05D0-\u05EA]+', line_no_parens)
-            for hw in hebrew_words:
-                # Accept words different from input OR same word if it's the only analysis
-                if hw != word and len(hw) >= 2:
-                    base_words.append(hw)
-
-    # If we found base words, return the first one
+    # Return the first base word found
     if base_words:
         morph_info['base_words'] = base_words
         return base_words[0], morph_info
-
-    # If word was recognized but no different base found, it might be a root itself
-    if morph_info.get('word_recognized'):
-        return word, morph_info
 
     return '', morph_info
 
