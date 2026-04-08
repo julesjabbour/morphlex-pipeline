@@ -61,11 +61,40 @@ def _normalize_sanskrit(word: str) -> str:
     return normalized.strip()
 
 
+def _extract_sanskrit_stems(word: str) -> list:
+    """
+    Extract potential stems from a Sanskrit word by stripping common endings.
+
+    Sanskrit verb endings: -ति, -नि, -सि, -मि, -न्ति, -थ, -ध्वम्, -ते, etc.
+    Sanskrit noun endings: -म्, -ः, -आ, -अम्, -एन, -आय, -आत्, etc.
+
+    Returns list of possible stems (longer stems first).
+    """
+    stems = []
+
+    # Common verb endings (present tense, etc.)
+    verb_endings = ['न्ति', 'ति', 'नि', 'सि', 'मि', 'थ', 'ध्वम्', 'ते', 'न्ते', 'से', 'वहे', 'महे']
+    # Common noun/adjective endings
+    noun_endings = ['म्', 'ः', 'आ', 'अम्', 'एन', 'आय', 'आत्', 'स्य', 'ई', 'ऊ', 'औ', 'अः', 'आः', 'इ', 'उ']
+
+    all_endings = verb_endings + noun_endings
+
+    for ending in all_endings:
+        if word.endswith(ending) and len(word) > len(ending):
+            stem = word[:-len(ending)]
+            if len(stem) >= 2 and stem not in stems:  # At least 2 chars
+                stems.append(stem)
+
+    return stems
+
+
 def _extract_sanskrit_root(word: str, etymology_links: list) -> str:
     """
     Extract Sanskrit root (dhatu) from wiktextract_roots.pkl or etymology data.
 
-    Sanskrit uses a root (dhatu) system.
+    Sanskrit uses a root (dhatu) system. The adapter receives translated words
+    (inflected forms like लिखति "writes") but PKL has base forms/lemmas.
+    We try: direct lookup -> normalized lookup -> stem-based lookup.
     """
     global _normalized_lookup
     # First, try direct lookup in wiktextract_roots.pkl
@@ -80,6 +109,20 @@ def _extract_sanskrit_root(word: str, etymology_links: list) -> str:
         original_key = _normalized_lookup[word_normalized]
         if roots_index.get(original_key):
             return roots_index[original_key][0]
+
+    # Try stem-based lookup (strip common verb/noun endings)
+    # Translated words are often inflected forms; PKL has base forms
+    stems = _extract_sanskrit_stems(word)
+    for stem in stems:
+        # Direct stem lookup
+        if stem in roots_index and roots_index[stem]:
+            return roots_index[stem][0]
+        # Normalized stem lookup
+        stem_normalized = _normalize_sanskrit(stem)
+        if _normalized_lookup and stem_normalized in _normalized_lookup:
+            original_key = _normalized_lookup[stem_normalized]
+            if roots_index.get(original_key):
+                return roots_index[original_key][0]
 
     # Fallback: Look for root info in etymology
     for link in etymology_links:

@@ -6,6 +6,7 @@ import re
 import unicodedata
 import urllib.request
 import urllib.error
+import urllib.parse
 
 from pipeline.wiktextract_loader import load_index
 
@@ -49,7 +50,9 @@ def _query_morpheus_greek(word: str) -> list[dict]:
         if not clean_word:
             return results
 
-        url = f"{MORPHEUS_GREEK_URL}{clean_word}"
+        # URL-encode Greek characters (Morpheus expects UTF-8 encoded URLs)
+        encoded_word = urllib.parse.quote(clean_word, safe='')
+        url = f"{MORPHEUS_GREEK_URL}{encoded_word}"
         with urllib.request.urlopen(url, timeout=5) as response:
             text_data = response.read().decode('utf-8')
 
