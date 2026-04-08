@@ -43,12 +43,53 @@ _LATMOR_POS_MAP = {
 }
 
 
+def _parse_morpheus_lemma(lemma_token: str) -> str:
+    """
+    Parse Morpheus lemma token to extract clean lemma.
+
+    Morpheus format varies:
+    - "scri_bo_,scribo" -> "scribo" (form with underscores, comma, then lemma)
+    - "laudo_.laudo" -> "laudo" (form with underscore, dot, then lemma)
+    - "amo" -> "amo" (simple lemma)
+
+    The pattern is: underscores mark vowel length in the form,
+    then comma or dot separates form from lemma.
+    """
+    if not lemma_token:
+        return ''
+
+    # Priority 1: comma separator (form,lemma)
+    if ',' in lemma_token:
+        parts = lemma_token.split(',')
+        # Take last part (the clean lemma), strip any hash markers
+        lemma = parts[-1].strip()
+        if '#' in lemma:
+            lemma = lemma.split('#')[0]
+        return lemma
+
+    # Priority 2: dot separator (form.lemma)
+    if '.' in lemma_token:
+        parts = lemma_token.split('.')
+        lemma = parts[-1].strip()
+        return lemma
+
+    # Priority 3: underscore cleanup (remove vowel length markers)
+    if '_' in lemma_token:
+        # Remove underscores but keep the letters
+        lemma = lemma_token.replace('_', '')
+        return lemma
+
+    return lemma_token
+
+
 def _query_morpheus(word: str) -> list[dict]:
     """
     Query Morpheus REST API for Latin morphological analysis.
 
     Morpheus returns a custom text format (NOT JSON):
-    <NL>V laudo_.laudo  pres ind act 1st sg        conj1.are.vb</NL>
+    <NL>V scri_bo_,scribo  pres ind act 1st sg        conj3</NL>
+
+    Format: POS form_with_macrons,lemma features... conjugation_info
 
     Args:
         word: Latin word to analyze
@@ -82,7 +123,8 @@ def _query_morpheus(word: str) -> list[dict]:
             result = {
                 'lemma': '',
                 'pos': '',
-                'features': {}
+                'features': {},
+                'conjugation': ''
             }
 
             # Split on whitespace - POS is first token
@@ -94,23 +136,22 @@ def _query_morpheus(word: str) -> list[dict]:
             pos_raw = tokens[0].upper()
             result['pos'] = _MORPHEUS_POS_MAP.get(pos_raw, pos_raw.lower())
 
-            # Second token contains lemma: format is "word_.lemma" - extract part after the dot
+            # Second token contains lemma in format: form,lemma or form.lemma
             if len(tokens) > 1:
-                lemma_part = tokens[1]
-                # Lemma is the part after the dot (e.g., "laudo_.laudo" -> "laudo")
-                if '.' in lemma_part:
-                    result['lemma'] = lemma_part.split('.', 1)[1]
-                else:
-                    result['lemma'] = lemma_part
+                result['lemma'] = _parse_morpheus_lemma(tokens[1])
 
-            # Remaining tokens (before the conjugation info) are morphological features
-            # Features like: pres ind act 1st sg
+            # Remaining tokens are morphological features and conjugation info
             feature_tokens = tokens[2:] if len(tokens) > 2 else []
 
             for feat in feature_tokens:
                 feat_lower = feat.lower()
 
-                # Skip conjugation info (e.g., conj1.are.vb)
+                # Capture conjugation info (e.g., conj1, conj3)
+                if feat_lower.startswith('conj'):
+                    result['conjugation'] = feat_lower
+                    continue
+
+                # Skip other dot-separated tokens (e.g., are.vb)
                 if '.' in feat:
                     continue
 
@@ -281,6 +322,102 @@ def _extract_latin_root(lemma: str, pos: str) -> str:
     return lemma
 
 
+def _disambiguate_latin_parses(morpheus_results: list[dict], latmor_results: list[dict]) -> tuple[dict, float]:
+    """
+    Disambiguate multiple Latin parses and select the best one.
+
+    Strategy:
+    1. Prefer analyses where both tools agree on lemma
+    2. Prefer citation forms (nominative for nouns, infinitive/1st sg for verbs)
+    3. Prefer more common POS (noun > verb > adjective for ambiguous forms)
+    4. Use feature completeness as tiebreaker
+
+    Returns:
+        Tuple of (best_result, confidence) where confidence reflects certainty
+    """
+    if not morpheus_results and not latmor_results:
+        return None, 0.0
+
+    # Collect all results with source tags
+    all_results = []
+    for r in morpheus_results:
+        all_results.append(('morpheus', r))
+    for r in latmor_results:
+        all_results.append(('latmor', r))
+
+    if len(all_results) == 1:
+        return all_results[0][1], 0.95  # Single result = high confidence
+
+    # Score each result
+    scored = []
+    morpheus_lemmas = {r['lemma'].lower() for r in morpheus_results if r.get('lemma')}
+    latmor_lemmas = {r['lemma'].lower() for r in latmor_results if r.get('lemma')}
+    agreed_lemmas = morpheus_lemmas & latmor_lemmas
+
+    for source, result in all_results:
+        score = 0
+        lemma = result.get('lemma', '').lower()
+        pos = result.get('pos', '')
+        features = result.get('features', {})
+
+        # Bonus: lemma agreement between tools (+30 points)
+        if lemma in agreed_lemmas:
+            score += 30
+
+        # Citation form bonus (+20 points)
+        # For nouns: nominative singular
+        # For verbs: present active indicative 1st sg, or infinitive
+        if pos == 'noun':
+            if features.get('case') == 'nom' and features.get('number') == 'sg':
+                score += 20
+        elif pos == 'verb':
+            if features.get('mood') == 'inf':
+                score += 20
+            elif (features.get('tense') == 'pres' and
+                  features.get('voice') == 'act' and
+                  features.get('mood') == 'ind' and
+                  features.get('person') == '1st' and
+                  features.get('number') == 'sg'):
+                score += 20
+
+        # POS priority for ambiguous forms (+10 points)
+        # Latin morphology: noun forms are more common in text
+        pos_priority = {'noun': 15, 'verb': 12, 'adjective': 10, 'adverb': 8}
+        score += pos_priority.get(pos, 5)
+
+        # Feature completeness (+1 point per feature, max 5)
+        score += min(len(features), 5)
+
+        # Morpheus slightly preferred (more comprehensive) (+2)
+        if source == 'morpheus':
+            score += 2
+
+        scored.append((score, source, result))
+
+    # Sort by score descending
+    scored.sort(key=lambda x: -x[0])
+
+    best_score, best_source, best_result = scored[0]
+
+    # Calculate confidence based on score gap
+    if len(scored) > 1:
+        second_score = scored[1][0]
+        gap = best_score - second_score
+        # Large gap = high confidence, small gap = low confidence
+        if gap >= 20:
+            confidence = 0.95
+        elif gap >= 10:
+            confidence = 0.85
+        elif gap >= 5:
+            confidence = 0.75
+        else:
+            confidence = 0.6  # Ambiguous - multiple valid parses
+    else:
+        confidence = 0.95
+
+    return best_result, confidence
+
+
 def _classify_latin_morph_type(lemma: str, pos: str) -> str:
     """
     Classify Latin morphological type.
@@ -308,27 +445,88 @@ def _classify_latin_morph_type(lemma: str, pos: str) -> str:
         return 'UNKNOWN'
 
 
-def analyze_latin(word: str) -> list[dict]:
+def analyze_latin(word: str, return_all: bool = False) -> list[dict]:
     """
     Analyze a Latin word and return morphological analyses.
 
-    Queries both Morpheus REST API and LatMor, merging results from both sources.
-    Falls back to LatMor only if Morpheus connection fails.
+    Queries both Morpheus REST API and LatMor, then disambiguates to pick
+    the best parse. By default returns only the best parse; set return_all=True
+    to get all parses with the best one marked.
+
+    Disambiguation strategy:
+    - Prefer lemmas where both tools agree
+    - Prefer citation forms (nominative for nouns, infinitive for verbs)
+    - Use morphological features for tiebreaking
 
     Args:
         word: Latin word to analyze
+        return_all: If True, return all parses; if False (default), return only best
 
     Returns:
         List of dicts matching the lexicon.entries schema columns
     """
-    results = []
-
     # Query both sources
     morpheus_results = _query_morpheus(word)
     latmor_results = _query_latmor(word)
 
-    # Convert Morpheus results
+    # Disambiguate to find best parse
+    best_parse, confidence = _disambiguate_latin_parses(morpheus_results, latmor_results)
+
+    if not return_all and best_parse:
+        # Return only the best parse
+        lemma = best_parse['lemma']
+        pos = best_parse['pos']
+        root = _extract_latin_root(lemma, pos)
+        morph_type = _classify_latin_morph_type(lemma, pos)
+
+        result = {
+            'language_code': 'la',
+            'word_native': word,
+            'lemma': lemma,
+            'root': root,
+            'pos': pos,
+            'morph_type': morph_type,
+            'derived_from_root': root if morph_type == 'DERIVATION' else None,
+            'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
+            'compound_components': None,
+            'morphological_features': best_parse.get('features', {}),
+            'source_tool': 'morpheus+latmor',
+            'confidence': confidence
+        }
+        return [result]
+
+    # Return all parses (with best one first and marked)
+    results = []
+    best_lemma = best_parse['lemma'] if best_parse else None
+
+    # Add best parse first
+    if best_parse:
+        lemma = best_parse['lemma']
+        pos = best_parse['pos']
+        root = _extract_latin_root(lemma, pos)
+        morph_type = _classify_latin_morph_type(lemma, pos)
+
+        result = {
+            'language_code': 'la',
+            'word_native': word,
+            'lemma': lemma,
+            'root': root,
+            'pos': pos,
+            'morph_type': morph_type,
+            'derived_from_root': root if morph_type == 'DERIVATION' else None,
+            'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
+            'compound_components': None,
+            'morphological_features': best_parse.get('features', {}),
+            'source_tool': 'morpheus+latmor',
+            'confidence': confidence,
+            'is_best_parse': True
+        }
+        results.append(result)
+
+    # Add remaining parses
     for m in morpheus_results:
+        if m.get('lemma') == best_lemma:
+            continue  # Skip if already added as best
         lemma = m['lemma']
         pos = m['pos']
         root = _extract_latin_root(lemma, pos)
@@ -345,12 +543,15 @@ def analyze_latin(word: str) -> list[dict]:
             'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
             'compound_components': None,
             'morphological_features': m['features'],
-            'source_tool': 'morpheus'
+            'source_tool': 'morpheus',
+            'confidence': 0.3,
+            'is_best_parse': False
         }
         results.append(result)
 
-    # Convert LatMor results
     for l in latmor_results:
+        if l.get('lemma') == best_lemma:
+            continue  # Skip if already added as best
         lemma = l['lemma']
         pos = l['pos']
         root = _extract_latin_root(lemma, pos)
@@ -367,15 +568,10 @@ def analyze_latin(word: str) -> list[dict]:
             'derivation_mode': 'suffix' if morph_type == 'DERIVATION' else None,
             'compound_components': None,
             'morphological_features': l['features'],
-            'source_tool': 'latmor'
+            'source_tool': 'latmor',
+            'confidence': 0.3,
+            'is_best_parse': False
         }
         results.append(result)
-
-    # Calculate confidence based on total analyses
-    total_analyses = len(results)
-    if total_analyses > 0:
-        confidence = 1.0 / total_analyses
-        for r in results:
-            r['confidence'] = confidence
 
     return results

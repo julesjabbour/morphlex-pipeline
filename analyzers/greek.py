@@ -249,11 +249,13 @@ def _normalize_greek(word: str) -> str:
 
 def _extract_greek_root_from_lemma(lemma: str, pos: str) -> str:
     """
-    Extract Greek root from lemma (same pattern as Latin adapter).
+    Extract Greek root from lemma by stripping inflectional endings.
 
     For verbs, extract the verb stem by stripping common endings.
     For nouns/adjectives, strip nominal endings.
-    ALWAYS returns lemma as fallback (never empty for non-empty input).
+
+    ZERO ERROR SUPPRESSION: Returns empty string if no valid root extraction
+    can be performed. Does NOT return the input word as a fake root.
     """
     if not lemma:
         return ''
@@ -278,9 +280,10 @@ def _extract_greek_root_from_lemma(lemma: str, pos: str) -> str:
         if lemma_norm.endswith(ending) and len(lemma_norm) > len(ending) + 1:
             return lemma[:-len(ending)] if lemma.endswith(ending) else lemma_norm[:-len(ending)]
 
-    # Return lemma only if it differs from input (actual lemmatization happened)
-    # For Greek, Morpheus doesn't work - this code path won't be reached
-    return lemma
+    # ZERO ERROR SUPPRESSION: Return empty if no valid root extraction
+    # Returning the input word as root is a fake result
+    # Greek Morpheus doesn't work anyway - this is a tool limitation
+    return ''
 
 
 def _extract_greek_root(word: str, concept: dict) -> str:
@@ -290,7 +293,9 @@ def _extract_greek_root(word: str, concept: dict) -> str:
     Greek uses a root system similar to other Indo-European languages.
     Note: Greek roots may include PIE-derived forms - this is valid for Greek.
 
-    RETURNS: root from pkl, etymology, or word itself as fallback (never empty for non-empty input).
+    ZERO ERROR SUPPRESSION: Returns empty string if no root data found.
+    Does NOT return the input word as a fake root.
+    Greek is a TOOL LIMITATION (Morpheus returns nothing for Greek).
     """
     global _normalized_lookup
     roots_index = _load_roots_index()

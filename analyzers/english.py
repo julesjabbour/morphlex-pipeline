@@ -238,24 +238,81 @@ def _fix_pos_tag(word: str, pos: str, lemma: str) -> str:
     """
     Fix common spaCy POS tagging errors.
 
-    Problem 5: spaCy incorrectly tags common nouns as PROPN.
+    Problem: spaCy incorrectly tags common nouns as PROPN when processed
+    in isolation (no sentence context). This happens because:
+    1. spaCy uses statistical models that expect sentence context
+    2. Single words look like titles/proper nouns to the model
+    3. Words ending in -ary, -tion, etc. get mistagged
+
+    Fix strategy:
+    1. Explicit allowlist of known common nouns
+    2. Morphological heuristics (common noun suffixes)
+    3. Case-based heuristics (all lowercase = likely common noun)
     """
-    # List of words commonly mistagged as PROPN
-    common_nouns = {
-        'dictionary', 'book', 'water', 'fire', 'hand', 'eye', 'stone',
-        'heart', 'sun', 'moon', 'tree', 'blood', 'house', 'word', 'name',
-        'day', 'night', 'year', 'time', 'man', 'woman', 'child', 'world'
-    }
+    if not word or not pos:
+        return pos
 
     word_lower = word.lower()
 
-    # If tagged as PROPN but is a common word, fix to NOUN
-    if pos == 'PROPN' and word_lower in common_nouns:
-        return 'NOUN'
+    # Explicit allowlist of words commonly mistagged as PROPN
+    # Expanded list covering frequent vocabulary
+    common_nouns = {
+        # Basic vocabulary (high frequency)
+        'dictionary', 'book', 'water', 'fire', 'hand', 'eye', 'stone',
+        'heart', 'sun', 'moon', 'tree', 'blood', 'house', 'word', 'name',
+        'day', 'night', 'year', 'time', 'man', 'woman', 'child', 'world',
+        # Body parts
+        'head', 'foot', 'arm', 'leg', 'ear', 'nose', 'mouth', 'tooth',
+        'finger', 'hair', 'skin', 'bone', 'brain', 'lung', 'liver',
+        # Nature
+        'river', 'mountain', 'ocean', 'forest', 'lake', 'sea', 'sky',
+        'star', 'rain', 'snow', 'wind', 'cloud', 'earth', 'ground',
+        # Objects
+        'table', 'chair', 'door', 'window', 'bed', 'food', 'drink',
+        'car', 'road', 'bridge', 'wall', 'floor', 'roof', 'garden',
+        # Abstract
+        'love', 'hate', 'fear', 'hope', 'life', 'death', 'peace', 'war',
+        'truth', 'knowledge', 'wisdom', 'power', 'strength', 'beauty',
+        # Actions as nouns
+        'write', 'read', 'hear', 'see', 'feel', 'think', 'know', 'speak',
+    }
 
-    # If all lowercase and tagged as PROPN, likely wrong
-    if pos == 'PROPN' and word == word_lower and not word[0].isupper():
-        return 'NOUN'
+    # Common noun suffixes - words with these are almost never proper nouns
+    noun_suffixes = (
+        'tion', 'sion', 'ment', 'ness', 'ity', 'ance', 'ence',
+        'ary', 'ery', 'ory', 'dom', 'hood', 'ship', 'ism', 'ist',
+        'ure', 'age', 'al', 'th', 'cy', 'ty'
+    )
+
+    # Verb/adjective suffixes that get mistagged
+    other_suffixes = (
+        'ing', 'ed', 'er', 'est', 'ly', 'ful', 'less', 'able', 'ible'
+    )
+
+    if pos == 'PROPN':
+        # Rule 1: Explicit allowlist
+        if word_lower in common_nouns:
+            return 'NOUN'
+
+        # Rule 2: All lowercase word = almost never a proper noun
+        # (Proper nouns are capitalized in English)
+        if word == word_lower:
+            return 'NOUN'
+
+        # Rule 3: Morphological heuristics - common noun suffixes
+        if any(word_lower.endswith(suffix) for suffix in noun_suffixes):
+            return 'NOUN'
+
+        # Rule 4: Verb/adjective suffixes
+        if any(word_lower.endswith(suffix) for suffix in other_suffixes):
+            # Check if it might be a verb or adjective based on suffix
+            if word_lower.endswith('ing') or word_lower.endswith('ed'):
+                return 'VERB'
+            elif word_lower.endswith('ly'):
+                return 'ADV'
+            elif word_lower.endswith(('ful', 'less', 'able', 'ible', 'ous')):
+                return 'ADJ'
+            return 'NOUN'
 
     return pos
 
