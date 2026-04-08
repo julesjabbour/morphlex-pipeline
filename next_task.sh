@@ -1,9 +1,9 @@
 #!/bin/bash
-# Task: Bug Fix Verification Round 3 - Hebrew/Arabic extraction + Greek PIE filter
-# Bug 2a partial: Greek finding roots but PIE reconstructions leak (*wed-, *h₂ew-...)
-# Bug 2b FAIL: Hebrew dropped from 763 to 0, Arabic from 15,886 to 1
-# Fixes: extract_wiktextract_roots.py (only filter ine-pro, not require exact lang match)
-#        greek.py (add PIE reconstruction filter)
+# Task: Bug Fix Verification Round 4 - Content-based PIE filter
+# Previous approach: Filter by source_lang=='ine-pro' - unreliable
+# New approach: Filter by root CONTENT - reject roots starting with * or containing PIE diacritics
+# This preserves valid Semitic consonantal roots (k-t-b) while filtering PIE (*ḱerd-)
+# Timestamp: 2026-04-08T-fix4
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 echo "=== BUG FIX VERIFICATION TESTS ==="

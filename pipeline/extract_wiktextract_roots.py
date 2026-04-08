@@ -24,9 +24,29 @@ OUTPUT_FILE = os.path.join(DATA_DIR, 'wiktextract_roots.pkl')
 # Languages we care about (entry languages)
 TARGET_LANGUAGES = {'he', 'sa', 'grc', 'ar', 'la', 'en', 'de', 'tr', 'zh', 'ja', 'ine-pro'}
 
-# Languages where we want to filter out PIE reconstructions
-# For these languages, exclude roots where source_lang is 'ine-pro'
-FILTER_PIE_ROOTS = {'he', 'sa', 'ar', 'grc'}
+# PIE diacritics that indicate a reconstructed root
+# These are NOT found in real Semitic/Sanskrit/Greek consonantal roots
+PIE_DIACRITICS = {'ḱ', 'ǵ', 'ʰ', 'ʷ', '₁', '₂', '₃', 'h₁', 'h₂', 'h₃', 'ḗ', 'ṓ'}
+
+
+def looks_like_pie_root(root_str: str) -> bool:
+    """
+    Check if a root looks like a PIE reconstruction rather than a native root.
+
+    Content-based filter - more reliable than checking source_lang metadata.
+    PIE roots typically: start with *, contain laryngeals (h₁/h₂/h₃), or use PIE diacritics.
+    Native Semitic roots like k-t-b or Hebrew consonantal roots don't have these.
+    """
+    if not root_str:
+        return False
+    # Check if any part starts with * (reconstruction marker)
+    if root_str.startswith('*') or '-*' in root_str:
+        return True
+    # Check for PIE diacritics
+    for diac in PIE_DIACRITICS:
+        if diac in root_str:
+            return True
+    return False
 
 
 def extract_roots():
@@ -85,15 +105,6 @@ def extract_roots():
                 # args['2'] = source language of the ROOT (he, sa, ine-pro, etc.)
                 # args['3'], args['4'], etc. = actual root consonants
 
-                source_lang = args.get('2', '').strip()
-
-                # For Hebrew/Sanskrit/Arabic/Greek: filter out PIE reconstructions
-                # This fixes Bug 1 where Hebrew roots showed *ḱerd- instead of consonantal roots
-                # And Bug 2a where Greek roots showed *wed- instead of Greek roots
-                if lang_code in FILTER_PIE_ROOTS:
-                    if source_lang == 'ine-pro':
-                        continue  # Skip PIE roots for these languages
-
                 # Extract roots from position 3 onwards
                 root_parts = []
                 for i in range(3, 10):  # Check positions 3-9
@@ -104,6 +115,13 @@ def extract_roots():
                 if root_parts:
                     # Store as joined root (e.g., "k-t-b" for triconsonantal)
                     root_str = '-'.join(root_parts)
+
+                    # Content-based PIE filter: skip roots that look like PIE reconstructions
+                    # This is more reliable than checking source_lang metadata
+                    # Native Semitic roots (k-t-b) pass; PIE roots (*ḱerd-) get filtered
+                    if looks_like_pie_root(root_str):
+                        continue
+
                     # Index by entry language (so adapters can look up words)
                     if root_str not in roots_index[lang_code][word]:
                         roots_index[lang_code][word].append(root_str)
