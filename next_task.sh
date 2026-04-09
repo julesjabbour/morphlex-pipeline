@@ -1,13 +1,13 @@
 #!/bin/bash
-# BACKFILL ENGLISH ROOT AND DERIVATION from wiktextract_match
-# Timestamp: 2026-04-09-backfill-en-root-derivation-v1
-# - For English rows with wiktextract_match containing from=X, set root and derivation_info
-# - For English rows with compound data, set compound_components
-# - Does NOT change morph_type
+# INSTALL MORPHOLEX FOR ENGLISH
+# Timestamp: 2026-04-09-install-morpholex-v1
+# - Download MorphoLex xlsx to /mnt/pgdata/morphlex/MorphoLex-en/
+# - Test English adapter with 5 words
+# - Re-analyze all English rows in master_table.csv
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== BACKFILL ENGLISH ROOT AND DERIVATION ==="
+echo "=== INSTALL MORPHOLEX FOR ENGLISH ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -16,8 +16,8 @@ echo ""
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-# Run the backfill script
-python3 pipeline/backfill_english_root_derivation.py
+# Run the install script
+python3 pipeline/install_morpholex.py
 
 RESULT=$?
 
