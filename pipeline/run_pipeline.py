@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-PHASE 5b: Run Morphological Pipeline on WordNet Concepts
+FULL PRODUCTION RUN: Run Morphological Pipeline on ALL WordNet Concepts
 
-Processes concepts from data/concept_wordnet_map.pkl through language adapters
+Processes ALL concepts from data/concept_wordnet_map.pkl through language adapters
 and cross-references with data/wiktextract_morphology.pkl.
 
-Output: data/test_100_concepts.csv
+Output: data/master_table.csv
 Columns: synset_id, pos, definition, language, word, root, morph_type,
          derivation_info, compound_components, wiktextract_match
 
-TEST RUN: First 100 concepts with 3+ languages only.
+With checkpointing every 1,000 concepts for crash recovery.
 """
 import sys
 # Fix Python path BEFORE any local imports
@@ -32,7 +32,11 @@ from datetime import datetime
 # Output paths
 CONCEPT_MAP_PATH = '/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl'
 WIKTEXTRACT_MORPH_PATH = '/mnt/pgdata/morphlex/data/wiktextract_morphology.pkl'
-OUTPUT_CSV_PATH = '/mnt/pgdata/morphlex/data/test_100_concepts.csv'
+OUTPUT_CSV_PATH = '/mnt/pgdata/morphlex/data/master_table.csv'
+CHECKPOINT_PATH = '/mnt/pgdata/morphlex/data/pipeline_checkpoint.pkl'
+
+# Target languages (only process concepts with 2+ of these)
+TARGET_LANGS = {'arb', 'en', 'cmn-Hans', 'ja', 'he', 'el'}
 
 # Language code to adapter module mapping
 # Maps concept_wordnet_map language codes to analyzer modules and functions
@@ -155,7 +159,7 @@ def main():
     start_time = time.time()
 
     log("=" * 70)
-    log("PHASE 5b: Run Morphological Pipeline on 100 Concepts")
+    log("FULL PRODUCTION RUN: Morphological Pipeline on ALL Concepts")
     log("=" * 70)
     log(f"Git HEAD: {os.popen('git rev-parse HEAD 2>/dev/null').read().strip()}")
     log(f"Start: {datetime.now().isoformat()}")
@@ -194,74 +198,122 @@ def main():
 
     log(f"\nLoaded {len(adapters)} adapters: {list(adapters.keys())}")
 
-    # Filter concepts with 3+ languages
-    log("\nFiltering concepts with 3+ languages...")
+    # Filter concepts with 2+ of our target languages
+    log("\nFiltering concepts with 2+ target languages...")
     multilingual = []
     for synset_id, data in concept_map.items():
         words = data.get('words', {})
-        if len(words) >= 3:
+        target_lang_count = sum(1 for lang in words if lang in TARGET_LANGS)
+        if target_lang_count >= 2:
             multilingual.append((synset_id, data))
 
-    log(f"Found {len(multilingual):,} concepts with 3+ languages")
+    total_concepts = len(multilingual)
+    log(f"Found {total_concepts:,} concepts with 2+ target languages")
 
-    # Take first 100 only
-    test_concepts = multilingual[:100]
-    log(f"Processing first {len(test_concepts)} concepts...")
+    # Check for checkpoint - resume if exists
+    processed_synsets = set()
+    rows = []
+    lang_row_counts = {}
+    start_idx = 0
+
+    if os.path.exists(CHECKPOINT_PATH):
+        log(f"\nLoading checkpoint from {CHECKPOINT_PATH}...")
+        with open(CHECKPOINT_PATH, 'rb') as f:
+            checkpoint = pickle.load(f)
+        processed_synsets = set(checkpoint.get('processed_synset_ids', []))
+        rows = checkpoint.get('rows', [])
+        lang_row_counts = checkpoint.get('lang_row_counts', {})
+        log(f"Resuming from checkpoint: {len(processed_synsets)} concepts already done.")
+        log(f"Rows recovered: {len(rows)}")
+
+    log(f"\nProcessing ALL {total_concepts:,} concepts...")
 
     # Process concepts
     log("\n" + "=" * 70)
     log("PROCESSING")
     log("=" * 70)
 
-    rows = []
-    lang_row_counts = {}
-    errors_by_lang = {}
+    errors_count = 0
+    skipped_count = len(processed_synsets)
+    processed_count = skipped_count
 
-    for idx, (synset_id, data) in enumerate(test_concepts):
-        pos = data.get('pos', '')
-        definition = data.get('definition', '')
-        words_by_lang = data.get('words', {})
-
-        if (idx + 1) % 20 == 0:
-            log(f"  Processed {idx + 1}/100 concepts, {len(rows)} rows so far...")
-
-        for lang_code, words in words_by_lang.items():
-            # Check if we have an adapter for this language
-            if lang_code not in adapters:
+    try:
+        for idx, (synset_id, data) in enumerate(multilingual):
+            # Skip already processed
+            if synset_id in processed_synsets:
                 continue
 
-            adapter_func = adapters[lang_code]
+            pos = data.get('pos', '')
+            definition = data.get('definition', '')
+            words_by_lang = data.get('words', {})
 
-            for word in words:
-                # Run adapter
-                adapter_result = run_adapter(adapter_func, word, lang_code)
+            for lang_code, words in words_by_lang.items():
+                # Check if we have an adapter for this language
+                if lang_code not in adapters:
+                    continue
 
-                # Get wiktextract match
-                wikt_match = get_wiktextract_match(word, lang_code, wiktextract_data)
-                wikt_match_str = ''
-                if wikt_match:
-                    wikt_match_str = f"type={wikt_match.get('morph_type', '')}"
-                    if wikt_match.get('derived_from_root'):
-                        wikt_match_str += f"|from={wikt_match.get('derived_from_root')}"
+                adapter_func = adapters[lang_code]
 
-                row = {
-                    'synset_id': synset_id,
-                    'pos': pos,
-                    'definition': definition[:100] + '...' if len(definition) > 100 else definition,
-                    'language': lang_code,
-                    'word': word,
-                    'root': adapter_result['root'],
-                    'morph_type': adapter_result['morph_type'],
-                    'derivation_info': adapter_result['derivation_info'],
-                    'compound_components': adapter_result['compound_components'],
-                    'wiktextract_match': wikt_match_str,
+                for word in words:
+                    # Run adapter
+                    adapter_result = run_adapter(adapter_func, word, lang_code)
+
+                    # Get wiktextract match
+                    wikt_match = get_wiktextract_match(word, lang_code, wiktextract_data)
+                    wikt_match_str = ''
+                    if wikt_match:
+                        wikt_match_str = f"type={wikt_match.get('morph_type', '')}"
+                        if wikt_match.get('derived_from_root'):
+                            wikt_match_str += f"|from={wikt_match.get('derived_from_root')}"
+
+                    row = {
+                        'synset_id': synset_id,
+                        'pos': pos,
+                        'definition': definition[:100] + '...' if len(definition) > 100 else definition,
+                        'language': lang_code,
+                        'word': word,
+                        'root': adapter_result['root'],
+                        'morph_type': adapter_result['morph_type'],
+                        'derivation_info': adapter_result['derivation_info'],
+                        'compound_components': adapter_result['compound_components'],
+                        'wiktextract_match': wikt_match_str,
+                    }
+                    rows.append(row)
+
+                    # Count per language
+                    lang_row_counts[lang_code] = lang_row_counts.get(lang_code, 0) + 1
+
+            processed_synsets.add(synset_id)
+            processed_count += 1
+
+            # Progress and checkpoint every 1,000 concepts
+            if processed_count % 1000 == 0:
+                log(f"Processed {processed_count:,}/{total_concepts:,} concepts, {len(rows):,} rows so far...")
+                # Save checkpoint
+                checkpoint = {
+                    'processed_synset_ids': list(processed_synsets),
+                    'row_count': len(rows),
+                    'rows': rows,
+                    'lang_row_counts': lang_row_counts,
                 }
-                rows.append(row)
+                with open(CHECKPOINT_PATH, 'wb') as f:
+                    pickle.dump(checkpoint, f)
 
-                # Count per language
-                lang_row_counts[lang_code] = lang_row_counts.get(lang_code, 0) + 1
+    except Exception as e:
+        # Crash handler - save checkpoint and exit
+        log(f"\nCRASHED at concept {processed_count} of {total_concepts}. Error: {e}")
+        checkpoint = {
+            'processed_synset_ids': list(processed_synsets),
+            'row_count': len(rows),
+            'rows': rows,
+            'lang_row_counts': lang_row_counts,
+        }
+        with open(CHECKPOINT_PATH, 'wb') as f:
+            pickle.dump(checkpoint, f)
+        log(f"Checkpoint saved with {len(processed_synsets)} concepts completed. Restart to resume.")
+        return 1
 
-    log(f"\nTotal rows produced: {len(rows)}")
+    log(f"\nTotal rows produced: {len(rows):,}")
 
     # Write CSV
     log(f"\nWriting to {OUTPUT_CSV_PATH}...")
@@ -279,19 +331,24 @@ def main():
     file_size = os.path.getsize(OUTPUT_CSV_PATH)
     elapsed = time.time() - start_time
 
+    # Delete checkpoint on successful completion
+    if os.path.exists(CHECKPOINT_PATH):
+        os.remove(CHECKPOINT_PATH)
+        log("Checkpoint deleted (successful completion)")
+
     # Print statistics
     log("\n" + "=" * 70)
     log("RESULTS")
     log("=" * 70)
-    log(f"Total rows produced: {len(rows)}")
-    log(f"Concepts processed: {len(test_concepts)}")
+    log(f"Total concepts processed: {processed_count:,}")
+    log(f"Total rows produced: {len(rows):,}")
     log(f"Output file: {OUTPUT_CSV_PATH}")
-    log(f"File size: {file_size:,} bytes ({file_size/1024:.1f} KB)")
-    log(f"Processing time: {elapsed:.1f} seconds")
+    log(f"File size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
+    log(f"Processing time: {elapsed:.1f} seconds ({elapsed/3600:.2f} hours)")
 
     log("\nPer-language row counts:")
     for lang in sorted(lang_row_counts.keys()):
-        log(f"  {lang}: {lang_row_counts[lang]} rows")
+        log(f"  {lang}: {lang_row_counts[lang]:,} rows")
 
     # Print 5 sample rows
     log("\n" + "=" * 70)
@@ -309,7 +366,7 @@ def main():
             log(f"    Wiktextract: {row['wiktextract_match']}")
 
     log("\n" + "=" * 70)
-    log("PHASE 5b COMPLETE")
+    log("FULL PRODUCTION RUN COMPLETE")
     log("=" * 70)
     log(f"End: {datetime.now().isoformat()}")
 
