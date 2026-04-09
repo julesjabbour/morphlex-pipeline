@@ -76,3 +76,7 @@ Never truncate Slack output. If output exceeds 3500 chars, split into multiple m
 **MARKER RULE:** Every push to main that needs cron to run MUST include an updated next_task.sh with a new marker hash. If you forget, cron won't pick it up.
 
 **ALWAYS PUSH TO MAIN RULE:** Every commit goes directly to main. Do not create branches. Do not ask which branch. Always push to main. Always update next_task.sh with a new marker hash so cron picks it up.
+
+**ONE TASK PER MESSAGE RULE:** Each message from Jules contains exactly one task. Do not combine multiple steps into one next_task.sh. If a task has prerequisites (install packages, download data), do the prerequisite as a SEPARATE task first. Wait for confirmation before proceeding to the next task.
+
+**SILENT INSTALL RULE:** Redirect ALL download, install, and import progress output to /dev/null. Only print actual results. Zero progress bars. Example: pip install xyz > /dev/null 2>&1 and python3 -c "import wn; wn.download('omw:1.4')" > /dev/null 2>&1

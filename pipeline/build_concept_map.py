@@ -84,12 +84,12 @@ def build_concept_map():
     # Collect unique language codes
     lang_codes = set()
     for lex in lexicons:
-        lang_codes.add(lex.language())
+        lang_codes.add(lex.language)
 
     lang_codes = sorted(lang_codes)
     log(f"Unique language codes ({len(lang_codes)}):")
     for code in lang_codes:
-        lex_for_lang = [l for l in lexicons if l.language() == code]
+        lex_for_lang = [l for l in lexicons if l.language == code]
         log(f"  {code}: {len(lex_for_lang)} lexicon(s)")
 
     # Get all synsets from English WordNet (the base)
@@ -107,7 +107,7 @@ def build_concept_map():
 
     if eng_wordnet is None:
         # Fallback: find any English lexicon
-        eng_lexicons = [l for l in lexicons if l.language() == 'en']
+        eng_lexicons = [l for l in lexicons if l.language == 'en']
         if eng_lexicons:
             eng_wordnet = wn.Wordnet(eng_lexicons[0].id())
             log(f"Using English lexicon: {eng_lexicons[0].id()}")
@@ -157,7 +157,7 @@ def build_concept_map():
                         # Use ili parameter to find matching synsets
                         matching_synsets = list(lex.synsets(ili=ili))
                         for ms in matching_synsets:
-                            lang = lex.language()
+                            lang = lex.language
                             for sense in ms.senses():
                                 word = sense.word()
                                 form = word.form()

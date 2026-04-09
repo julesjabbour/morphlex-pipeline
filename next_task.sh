@@ -1,7 +1,7 @@
 #!/bin/bash
-# BUILD CONCEPT MAP: Run build_concept_map.py to generate concept_wordnet_map.pkl
-# Timestamp: 2026-04-09-build-concept-map
-# Data already downloaded. No installs needed. Just build the pkl.
+# BUILD CONCEPT MAP: Run build_concept_map.py with fixed language property bug
+# Timestamp: 2026-04-09-fix-language-property
+# Data already downloaded. Bug fix: lex.language() -> lex.language (property not method)
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
