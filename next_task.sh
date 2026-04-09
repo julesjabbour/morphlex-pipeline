@@ -1,13 +1,14 @@
 #!/bin/bash
-# COMPARE MORPHOLEX vs WIKTEXTRACT FOR ENGLISH
-# Timestamp: 2026-04-09-compare-morpholex-wiktextract-v1
-# - Read master_table.csv English rows
-# - Compare morph_type/root from MorphoLex adapter vs wiktextract_match
-# - Create english_comparison.csv with agreement analysis
+# DEEP ANALYSIS OF DIFFERENT ROWS IN ENGLISH COMPARISON
+# Timestamp: 2026-04-09-analyze-english-differences-v1
+# - Load english_comparison.csv, filter to DIFFERENT rows
+# - Analysis 1: Count disagreement patterns
+# - Analysis 2: 10 random samples per pattern (100+ rows)
+# - Analysis 3: Root agreement when type differs
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== COMPARE MORPHOLEX vs WIKTEXTRACT FOR ENGLISH ==="
+echo "=== DEEP ANALYSIS OF ENGLISH COMPARISON DIFFERENCES ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -16,8 +17,8 @@ echo ""
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-# Run the comparison script
-python3 scripts/compare_morpholex_wiktextract.py
+# Run the analysis script
+python3 scripts/analyze_english_differences.py
 
 RESULT=$?
 
