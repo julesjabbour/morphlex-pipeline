@@ -18,6 +18,12 @@ Structure: {
 }
 
 ZERO HARDCODING. ZERO SHORTCUTS. ALL SYNSETS PROCESSED.
+
+wn library API reference (verified by diagnostic):
+- Lexicon properties: id, language, label, version
+- Synset properties: id, pos, ili
+- Synset methods: definition(), lemmas(), senses(), words()
+- Word methods: lemma(), forms()
 """
 import os
 import pickle
@@ -27,14 +33,13 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
-# Suppress ALL wn/nltk import output - redirect stderr/stdout during imports
+# Suppress ALL wn import output
 _stderr = sys.stderr
 _stdout = sys.stdout
 sys.stderr = open(os.devnull, 'w')
 sys.stdout = open(os.devnull, 'w')
 try:
     import wn
-    import nltk
 finally:
     sys.stderr.close()
     sys.stdout.close()
@@ -43,20 +48,11 @@ finally:
 
 # Output paths
 OUTPUT_FILE = '/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl'
-REPORT_DIR = '/mnt/pgdata/morphlex/reports'
 
 
 def log(msg):
     """Print with timestamp."""
     print(f"[{datetime.now().isoformat()}] {msg}", flush=True)
-
-
-def ensure_data_downloaded():
-    """Data already downloaded - just verify it's present."""
-    lexicons = list(wn.lexicons())
-    if len(lexicons) < 10:
-        raise RuntimeError(f"WordNet/OMW data not present! Only {len(lexicons)} lexicons found. Please download first.")
-    return len(lexicons)
 
 
 def get_pos_label(pos_char):
@@ -65,7 +61,7 @@ def get_pos_label(pos_char):
         'n': 'NOUN',
         'v': 'VERB',
         'a': 'ADJ',
-        's': 'ADJ',  # satellite adjective
+        's': 'ADJ',
         'r': 'ADV',
     }
     return pos_map.get(pos_char, 'OTHER')
@@ -77,25 +73,19 @@ def build_concept_map():
     log("PHASE 5a: Building WordNet Concept Map")
     log("=" * 70)
 
-    # Get all available lexicons (languages)
+    # Get all available lexicons
     lexicons = list(wn.lexicons())
-    log(f"\nDiscovered {len(lexicons)} lexicons (language resources):")
+    log(f"\nDiscovered {len(lexicons)} lexicons")
 
-    # Collect unique language codes
+    # Collect unique language codes - NOTE: lex.language is a PROPERTY, not method
     lang_codes = set()
     for lex in lexicons:
-        lang_codes.add(lex.language)
+        lang_codes.add(lex.language)  # PROPERTY, not lex.language()
 
     lang_codes = sorted(lang_codes)
-    log(f"Unique language codes ({len(lang_codes)}):")
-    for code in lang_codes:
-        lex_for_lang = [l for l in lexicons if l.language == code]
-        log(f"  {code}: {len(lex_for_lang)} lexicon(s)")
+    log(f"Unique language codes: {len(lang_codes)}")
 
-    # Get all synsets from English WordNet (the base)
-    log("\nFetching all synsets from English WordNet...")
-
-    # Find English WordNet - try different identifiers
+    # Find English WordNet
     eng_wordnet = None
     for wn_id in ['oewn:2024', 'ewn:2020', 'omw-en:1.4', 'omw-en31:1.4']:
         try:
@@ -106,11 +96,11 @@ def build_concept_map():
             continue
 
     if eng_wordnet is None:
-        # Fallback: find any English lexicon
         eng_lexicons = [l for l in lexicons if l.language == 'en']
         if eng_lexicons:
-            eng_wordnet = wn.Wordnet(eng_lexicons[0].id())
-            log(f"Using English lexicon: {eng_lexicons[0].id()}")
+            # NOTE: lex.id is a PROPERTY, not method
+            eng_wordnet = wn.Wordnet(eng_lexicons[0].id)
+            log(f"Using English lexicon: {eng_lexicons[0].id}")
         else:
             raise RuntimeError("No English WordNet found!")
 
@@ -120,60 +110,55 @@ def build_concept_map():
 
     # Build the concept map
     concept_map = {}
-    lang_coverage = defaultdict(int)  # Count synsets per language
+    lang_coverage = defaultdict(int)
 
     start_time = time.time()
-    last_report = start_time
 
     for i, synset in enumerate(all_synsets):
-        synset_id = synset.id()
+        # NOTE: synset.id is a PROPERTY, not method
+        synset_id = synset.id
 
-        # Get definition
+        # Get definition - NOTE: definition() is a METHOD (singular)
         try:
-            definitions = synset.definitions()
-            definition = definitions[0] if definitions else ""
+            definition = synset.definition() or ""
         except Exception:
             definition = ""
 
-        # Get POS from synset - the pos() method returns the POS
+        # Get POS - NOTE: synset.pos is a PROPERTY, not method
         try:
-            pos_char = synset.pos()
+            pos_char = synset.pos
             pos_label = get_pos_label(pos_char)
         except Exception:
-            # Fallback: try to parse from ID
             pos_char = synset_id.split('-')[-1] if '-' in synset_id else 'n'
             pos_label = get_pos_label(pos_char)
 
         # Collect words from all languages
         words_by_lang = defaultdict(list)
 
-        # Get words from this synset across all lexicons using ILI
+        # Get words using ILI - NOTE: synset.ili is a PROPERTY, not method
         try:
-            ili = synset.ili()
+            ili = synset.ili
             if ili:
-                # Find all synsets in all lexicons that share this ILI
                 for lex in lexicons:
                     try:
-                        # Use ili parameter to find matching synsets
                         matching_synsets = list(lex.synsets(ili=ili))
                         for ms in matching_synsets:
-                            lang = lex.language
-                            for sense in ms.senses():
-                                word = sense.word()
-                                form = word.form()
+                            lang = lex.language  # PROPERTY
+                            # words() is a METHOD, returns Word objects
+                            for word in ms.words():
+                                # lemma() is a METHOD on Word
+                                form = word.lemma()
                                 if form and form not in words_by_lang[lang]:
                                     words_by_lang[lang].append(form)
                     except Exception:
-                        # Some lexicons may not support ili lookup or may not have this synset
                         pass
         except Exception:
             pass
 
-        # Also get English words directly from the synset
+        # Also get English words directly
         try:
-            for sense in synset.senses():
-                word = sense.word()
-                form = word.form()
+            for word in synset.words():
+                form = word.lemma()
                 if form and form not in words_by_lang['en']:
                     words_by_lang['en'].append(form)
         except Exception:
@@ -190,141 +175,80 @@ def build_concept_map():
         for lang in words_by_lang:
             lang_coverage[lang] += 1
 
-        # Progress report every 10 seconds
-        now = time.time()
-        if now - last_report >= 10:
-            rate = (i + 1) / (now - start_time)
-            eta = (total_synsets - i - 1) / rate if rate > 0 else 0
-            log(f"  Processed {i+1:,}/{total_synsets:,} synsets ({rate:.0f}/sec, ETA: {eta:.0f}s)")
-            last_report = now
-
     elapsed = time.time() - start_time
-    log(f"\nProcessing complete in {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
+    log(f"Processing complete in {elapsed:.1f}s")
 
-    return concept_map, lang_coverage
-
-
-def save_and_verify(concept_map, lang_coverage):
-    """Save concept map and report stats."""
-    log("\n" + "=" * 70)
-    log("SAVING AND VERIFICATION")
-    log("=" * 70)
-
-    # Ensure output directory exists
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-
-    # Save pickle
-    log(f"Saving to {OUTPUT_FILE}...")
-    with open(OUTPUT_FILE, 'wb') as f:
-        pickle.dump(concept_map, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    # Get file size
-    file_size = os.path.getsize(OUTPUT_FILE)
-    log(f"File size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
-
-    # Verify by loading
-    log("Verifying saved file...")
-    with open(OUTPUT_FILE, 'rb') as f:
-        loaded = pickle.load(f)
-    log(f"Verified: loaded {len(loaded):,} synsets from saved pickle")
-
-    return file_size
-
-
-def print_stats(concept_map, lang_coverage, file_size, processing_time):
-    """Print final statistics."""
-    log("\n" + "=" * 70)
-    log("FINAL STATISTICS")
-    log("=" * 70)
-
-    total_synsets = len(concept_map)
-    log(f"Total synsets processed: {total_synsets:,}")
-    log(f"File size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
-    log(f"Processing time: {processing_time:.1f} seconds ({processing_time/60:.1f} minutes)")
-
-    # POS breakdown
-    pos_counts = defaultdict(int)
-    for data in concept_map.values():
-        pos_counts[data['pos']] += 1
-
-    log("\nPOS breakdown:")
-    for pos in sorted(pos_counts.keys()):
-        log(f"  {pos}: {pos_counts[pos]:,} synsets")
-
-    # Per-language coverage
-    log(f"\nPer-language coverage ({len(lang_coverage)} languages):")
-    for lang in sorted(lang_coverage.keys(), key=lambda x: -lang_coverage[x]):
-        count = lang_coverage[lang]
-        pct = 100.0 * count / total_synsets
-        log(f"  {lang}: {count:,} synsets ({pct:.1f}%)")
-
-
-def print_samples(concept_map):
-    """Print 5 random synsets with 4+ languages."""
-    log("\n" + "=" * 70)
-    log("SAMPLE OUTPUT: 5 synsets with 4+ languages")
-    log("=" * 70)
-
-    # Find synsets with 4+ languages
-    multilingual = [
-        (sid, data) for sid, data in concept_map.items()
-        if len(data['words']) >= 4
-    ]
-
-    log(f"Found {len(multilingual):,} synsets with 4+ languages")
-
-    if len(multilingual) < 5:
-        samples = multilingual
-    else:
-        samples = random.sample(multilingual, 5)
-
-    for i, (synset_id, data) in enumerate(samples, 1):
-        log(f"\n[{i}] {synset_id}")
-        log(f"    POS: {data['pos']}")
-        log(f"    Definition: {data['definition'][:100]}{'...' if len(data['definition']) > 100 else ''}")
-        log(f"    Languages ({len(data['words'])}):")
-        for lang in sorted(data['words'].keys()):
-            words = data['words'][lang]
-            words_str = ', '.join(words[:5])
-            if len(words) > 5:
-                words_str += f", ... (+{len(words)-5} more)"
-            log(f"      {lang}: {words_str}")
+    return concept_map, lang_coverage, elapsed
 
 
 def main():
     """Main entry point."""
-    start_time = time.time()
-
     log("PHASE 5a: Build WordNet Concept Map")
     log(f"Git HEAD: {os.popen('git rev-parse HEAD 2>/dev/null').read().strip()}")
     log(f"Start: {datetime.now().isoformat()}")
     log("")
 
-    # Step 1: Verify data is present (already downloaded)
-    num_lexicons = ensure_data_downloaded()
-    log(f"WordNet/OMW data verified: {num_lexicons} lexicons present")
+    # Verify data present
+    lexicons = list(wn.lexicons())
+    if len(lexicons) < 10:
+        raise RuntimeError(f"WordNet/OMW data not present! Only {len(lexicons)} lexicons.")
+    log(f"WordNet/OMW data verified: {len(lexicons)} lexicons present")
 
-    # Step 2: Build the concept map
-    concept_map, lang_coverage = build_concept_map()
+    # Build the concept map
+    concept_map, lang_coverage, processing_time = build_concept_map()
 
-    processing_time = time.time() - start_time
+    # Save pickle
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    log(f"\nSaving to {OUTPUT_FILE}...")
+    with open(OUTPUT_FILE, 'wb') as f:
+        pickle.dump(concept_map, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    # Step 3: Save and verify
-    file_size = save_and_verify(concept_map, lang_coverage)
+    file_size = os.path.getsize(OUTPUT_FILE)
 
-    # Step 4: Print statistics
-    print_stats(concept_map, lang_coverage, file_size, processing_time)
+    # Verify
+    with open(OUTPUT_FILE, 'rb') as f:
+        loaded = pickle.load(f)
+    log(f"Verified: {len(loaded):,} synsets saved")
 
-    # Step 5: Print samples
-    print_samples(concept_map)
-
-    total_time = time.time() - start_time
+    # Print stats
     log("\n" + "=" * 70)
-    log(f"PHASE 5a COMPLETE")
-    log(f"Total time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)")
-    log(f"Output: {OUTPUT_FILE}")
+    log("FINAL STATISTICS")
     log("=" * 70)
+    log(f"Total synsets: {len(concept_map):,}")
+    log(f"File size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
+    log(f"Processing time: {processing_time:.1f}s")
 
+    # POS breakdown
+    pos_counts = defaultdict(int)
+    for data in concept_map.values():
+        pos_counts[data['pos']] += 1
+    log("\nPOS breakdown:")
+    for pos in sorted(pos_counts.keys()):
+        log(f"  {pos}: {pos_counts[pos]:,}")
+
+    # Per-language coverage
+    log(f"\nPer-language coverage ({len(lang_coverage)} languages):")
+    for lang in sorted(lang_coverage.keys(), key=lambda x: -lang_coverage[x]):
+        count = lang_coverage[lang]
+        pct = 100.0 * count / len(concept_map)
+        log(f"  {lang}: {count:,} ({pct:.1f}%)")
+
+    # 5 samples with 4+ languages
+    log("\n" + "=" * 70)
+    log("SAMPLES: 5 synsets with 4+ languages")
+    log("=" * 70)
+    multilingual = [(sid, d) for sid, d in concept_map.items() if len(d['words']) >= 4]
+    log(f"Found {len(multilingual):,} synsets with 4+ languages")
+    samples = random.sample(multilingual, min(5, len(multilingual)))
+    for i, (sid, data) in enumerate(samples, 1):
+        log(f"\n[{i}] {sid} ({data['pos']})")
+        log(f"    Def: {data['definition'][:80]}...")
+        for lang in sorted(data['words'].keys())[:6]:
+            log(f"    {lang}: {', '.join(data['words'][lang][:3])}")
+
+    log("\n" + "=" * 70)
+    log("PHASE 5a COMPLETE")
+    log("=" * 70)
     return 0
 
 
