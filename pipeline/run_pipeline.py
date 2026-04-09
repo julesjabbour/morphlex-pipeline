@@ -15,6 +15,13 @@ import sys
 # Fix Python path BEFORE any local imports
 sys.path.insert(0, '/mnt/pgdata/morphlex')
 
+# Suppress all library debug output - set logging to WARNING level
+import logging
+logging.basicConfig(level=logging.WARNING)
+# Also suppress specific noisy loggers
+for name in ['urllib3', 'camel_tools', 'spacy', 'mecab', 'hspell']:
+    logging.getLogger(name).setLevel(logging.WARNING)
+
 import csv
 import importlib
 import os

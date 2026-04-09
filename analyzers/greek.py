@@ -25,8 +25,8 @@ _normalized_lookup = None  # {normalized_key: original_key}
 ROOTS_PKL_PATH = '/mnt/pgdata/morphlex/data/wiktextract_roots.pkl'
 MORPHEUS_GREEK_URL = 'http://localhost:1315/greek/'
 
-# Debug flag - set to True to see Morpheus responses
-_DEBUG_MORPHEUS = True
+# Debug flag - set to False to suppress Morpheus debug output
+_DEBUG_MORPHEUS = False
 
 # Beta Code mapping: Unicode Greek -> ASCII
 # Lowercase letters

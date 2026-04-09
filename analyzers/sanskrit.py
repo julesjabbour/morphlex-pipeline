@@ -35,23 +35,17 @@ def _init_vidyut():
 
         # Check if data directory exists
         if not os.path.exists(VIDYUT_DATA_PATH):
-            print(f"[DEBUG] Vidyut data not found at {VIDYUT_DATA_PATH}")
-            print("[DEBUG] Run vidyut.download_data() to download data")
             _vidyut_available = False
             return False
 
         _kosha = kosha.Kosha(VIDYUT_DATA_PATH)
         _vidyut_available = True
-        print(f"[DEBUG] Vidyut Kosha initialized from {VIDYUT_DATA_PATH}")
         return True
 
-    except ImportError as e:
-        print(f"[DEBUG] Vidyut import failed: {e}")
-        print("[DEBUG] Install with: pip install vidyut indic-transliteration")
+    except ImportError:
         _vidyut_available = False
         return False
-    except Exception as e:
-        print(f"[DEBUG] Vidyut initialization error: {type(e).__name__}: {e}")
+    except Exception:
         _vidyut_available = False
         return False
 
@@ -74,15 +68,13 @@ def _extract_root_vidyut(word: str) -> tuple[str, str, str]:
     # Transliterate Devanagari to SLP1 (internal format used by Vidyut)
     try:
         slp1 = _sanscript.transliterate(word, _sanscript.DEVANAGARI, _sanscript.SLP1)
-    except Exception as e:
-        print(f"[DEBUG] Transliteration error for '{word}': {e}")
+    except Exception:
         return None, None, None
 
     # Get morphological analyses from Vidyut
     try:
         entries = _kosha.get(slp1)
-    except Exception as e:
-        print(f"[DEBUG] Kosha lookup error for '{word}' (slp1: {slp1}): {e}")
+    except Exception:
         return None, None, None
 
     if not entries:

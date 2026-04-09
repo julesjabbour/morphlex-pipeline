@@ -44,10 +44,8 @@ def _find_hspell():
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             _hspell_path = path
             _hspell_available = True
-            print(f"[DEBUG] Found hspell binary at: {_hspell_path}")
             return True
 
-    print("[DEBUG] hspell binary not found")
     _hspell_available = False
     return False
 
