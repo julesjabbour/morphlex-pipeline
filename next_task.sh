@@ -1,21 +1,21 @@
 #!/bin/bash
-# BUILD CONCEPT MAP WITH ILI-BASED CROSS-LANGUAGE LOOKUP
-# Timestamp: 2026-04-09-ili-fix
-# Uses wn.synsets(ili=ili) to find matching synsets in ALL OMW languages
+# PHASE 5b: RUN PIPELINE ON 100 CONCEPTS
+# Timestamp: 2026-04-09-phase5b-test
+# Process first 100 concepts with 3+ languages through adapters
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== BUILD CONCEPT MAP (ILI-BASED) ==="
+echo "=== PHASE 5b: RUN PIPELINE TEST (100 CONCEPTS) ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
 
-# Sync the rewritten build_concept_map.py from git
+# Sync code from git
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-echo "Running ILI-based concept map builder..."
-python3 pipeline/build_concept_map.py
+echo "Running pipeline on first 100 concepts..."
+python3 pipeline/run_pipeline.py
 
 RESULT=$?
 
