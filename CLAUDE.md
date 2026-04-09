@@ -74,3 +74,5 @@ Never truncate Slack output. If output exceeds 3500 chars, split into multiple m
 **NO BROKEN PUSHES RULE:** Test in your session before pushing to main. If it segfaults, fix it before pushing. If it returns empty for everything, fix it before pushing. If it returns the same string for every word, fix it before pushing. Push to main ONLY when it works.
 
 **MARKER RULE:** Every push to main that needs cron to run MUST include an updated next_task.sh with a new marker hash. If you forget, cron won't pick it up.
+
+**ALWAYS PUSH TO MAIN RULE:** Every commit goes directly to main. Do not create branches. Do not ask which branch. Always push to main. Always update next_task.sh with a new marker hash so cron picks it up.
