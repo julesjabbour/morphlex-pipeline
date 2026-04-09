@@ -27,6 +27,20 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
+# Suppress ALL wn/nltk import output - redirect stderr/stdout during imports
+_stderr = sys.stderr
+_stdout = sys.stdout
+sys.stderr = open(os.devnull, 'w')
+sys.stdout = open(os.devnull, 'w')
+try:
+    import wn
+    import nltk
+finally:
+    sys.stderr.close()
+    sys.stdout.close()
+    sys.stderr = _stderr
+    sys.stdout = _stdout
+
 # Output paths
 OUTPUT_FILE = '/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl'
 REPORT_DIR = '/mnt/pgdata/morphlex/reports'
@@ -38,52 +52,11 @@ def log(msg):
 
 
 def ensure_data_downloaded():
-    """Download WordNet and OMW data if not present."""
-    log("Checking/downloading WordNet and OMW data...")
-
-    # NLTK downloads (for compatibility and some tools)
-    import nltk
-    try:
-        nltk.data.find('corpora/wordnet')
-        log("  NLTK WordNet: already present")
-    except LookupError:
-        log("  Downloading NLTK WordNet...")
-        nltk.download('wordnet', quiet=False)
-
-    try:
-        nltk.data.find('corpora/omw-1.4')
-        log("  NLTK OMW-1.4: already present")
-    except LookupError:
-        log("  Downloading NLTK OMW-1.4...")
-        nltk.download('omw-1.4', quiet=False)
-
-    # wn library download - need English WordNet first, then OMW
-    import wn
-
-    # Check what's available
+    """Data already downloaded - just verify it's present."""
     lexicons = list(wn.lexicons())
-    log(f"  Currently {len(lexicons)} wn lexicons installed")
-
-    # Download English WordNet (Open English WordNet 2020) if not present
-    try:
-        ewn = wn.Wordnet('ewn:2020')
-        log("  English WordNet (ewn:2020): already present")
-    except wn.Error:
-        log("  Downloading English WordNet (oewn:2024)...")
-        wn.download('oewn:2024', progress=True)
-
-    # Download OMW if not fully present
-    lexicons_after = list(wn.lexicons())
-    if len(lexicons_after) < 10:  # OMW has many languages
-        log("  Downloading Open Multilingual Wordnet (omw:1.4)...")
-        wn.download('omw:1.4', progress=True)
-    else:
-        log(f"  OMW appears present ({len(lexicons_after)} lexicons)")
-
-    # Final check
-    final_lexicons = list(wn.lexicons())
-    log(f"  Final count: {len(final_lexicons)} lexicons installed")
-    log("Data download complete.")
+    if len(lexicons) < 10:
+        raise RuntimeError(f"WordNet/OMW data not present! Only {len(lexicons)} lexicons found. Please download first.")
+    return len(lexicons)
 
 
 def get_pos_label(pos_char):
@@ -100,8 +73,6 @@ def get_pos_label(pos_char):
 
 def build_concept_map():
     """Build the concept map from WordNet synsets."""
-    import wn
-
     log("=" * 70)
     log("PHASE 5a: Building WordNet Concept Map")
     log("=" * 70)
@@ -289,9 +260,9 @@ def print_stats(concept_map, lang_coverage, file_size, processing_time):
 
 
 def print_samples(concept_map):
-    """Print 10 random synsets with 4+ languages."""
+    """Print 5 random synsets with 4+ languages."""
     log("\n" + "=" * 70)
-    log("SAMPLE OUTPUT: 10 synsets with 4+ languages")
+    log("SAMPLE OUTPUT: 5 synsets with 4+ languages")
     log("=" * 70)
 
     # Find synsets with 4+ languages
@@ -302,10 +273,10 @@ def print_samples(concept_map):
 
     log(f"Found {len(multilingual):,} synsets with 4+ languages")
 
-    if len(multilingual) < 10:
+    if len(multilingual) < 5:
         samples = multilingual
     else:
-        samples = random.sample(multilingual, 10)
+        samples = random.sample(multilingual, 5)
 
     for i, (synset_id, data) in enumerate(samples, 1):
         log(f"\n[{i}] {synset_id}")
@@ -324,13 +295,14 @@ def main():
     """Main entry point."""
     start_time = time.time()
 
-    log("PHASE 5a: Install WordNet + OMW and Build Concept Map")
+    log("PHASE 5a: Build WordNet Concept Map")
     log(f"Git HEAD: {os.popen('git rev-parse HEAD 2>/dev/null').read().strip()}")
     log(f"Start: {datetime.now().isoformat()}")
     log("")
 
-    # Step 1: Ensure data is downloaded
-    ensure_data_downloaded()
+    # Step 1: Verify data is present (already downloaded)
+    num_lexicons = ensure_data_downloaded()
+    log(f"WordNet/OMW data verified: {num_lexicons} lexicons present")
 
     # Step 2: Build the concept map
     concept_map, lang_coverage = build_concept_map()
