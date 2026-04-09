@@ -1,14 +1,14 @@
 #!/bin/bash
-# DEEP ANALYSIS OF DIFFERENT ROWS IN ENGLISH COMPARISON
-# Timestamp: 2026-04-09-analyze-english-differences-v1
-# - Load english_comparison.csv, filter to DIFFERENT rows
-# - Analysis 1: Count disagreement patterns
-# - Analysis 2: 10 random samples per pattern (100+ rows)
-# - Analysis 3: Root agreement when type differs
+# MERGE MORPHOLEX + WIKTEXTRACT FOR ENGLISH
+# Timestamp: 2026-04-09-merge-morpholex-wiktextract-v1
+# - Load master_table.csv
+# - Apply priority rule: COMPOUND_DERIVATION > COMPOUND > DERIVATION > ROOT > UNKNOWN
+# - Pick higher priority type, update root/derivation_info accordingly
+# - Save back to master_table.csv
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== DEEP ANALYSIS OF ENGLISH COMPARISON DIFFERENCES ==="
+echo "=== MERGE MORPHOLEX + WIKTEXTRACT FOR ENGLISH ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -17,8 +17,8 @@ echo ""
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-# Run the analysis script
-python3 scripts/analyze_english_differences.py
+# Run the merge script
+python3 scripts/merge_morpholex_wiktextract.py
 
 RESULT=$?
 
