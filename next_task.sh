@@ -1,6 +1,6 @@
 #!/bin/bash
-# PHASE 5b: RUN PIPELINE ON 100 CONCEPTS
-# Timestamp: 2026-04-09-phase5b-test
+# PHASE 5b: RUN PIPELINE ON 100 CONCEPTS (sys.path fix)
+# Timestamp: 2026-04-09-phase5b-syspath-fix
 # Process first 100 concepts with 3+ languages through adapters
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate

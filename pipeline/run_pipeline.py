@@ -11,11 +11,14 @@ Columns: synset_id, pos, definition, language, word, root, morph_type,
 
 TEST RUN: First 100 concepts with 3+ languages only.
 """
+import sys
+# Fix Python path BEFORE any local imports
+sys.path.insert(0, '/mnt/pgdata/morphlex')
+
 import csv
 import importlib
 import os
 import pickle
-import sys
 import time
 from datetime import datetime
 
