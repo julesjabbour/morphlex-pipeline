@@ -1,73 +1,69 @@
 #!/bin/bash
-# PHASE 5a: Install WordNet + OMW and Build Concept Map
-# Timestamp: 2026-04-09-wordnet-omw-concept-map
-# Purpose: Install WordNet/OMW, build pkl mapping synsets to multilingual words
-# Expected runtime: 10-30 minutes
-# NO HARDCODING. NO SHORTCUTS. ALL SYNSETS PROCESSED.
-
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== PHASE 5a: WORDNET + OMW CONCEPT MAP ==="
-echo "Git HEAD: $(git rev-parse HEAD)"
-echo "Start: $(date -Iseconds)"
+echo "=== concept_wordnet_map.pkl Check ==="
+echo "Git HEAD: $(git rev-parse --short HEAD)"
+echo "Start: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
-# Sync code first
-echo "--- Syncing code from origin/main ---"
-git fetch origin && git reset --hard origin/main
-echo "Now at: $(git rev-parse HEAD)"
-echo ""
+PKL_FILE="data/concept_wordnet_map.pkl"
 
-# Step 1: Install packages
-echo "=== STEP 1: Installing packages ==="
-pip install nltk wn --break-system-packages
-if [ $? -ne 0 ]; then
-    echo "ERROR: pip install failed!"
-    exit 1
-fi
-echo "Package installation complete."
-echo ""
-
-# Step 2: Download WordNet data (NLTK)
-echo "=== STEP 2: Downloading WordNet/OMW data ==="
-python3 -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')"
-if [ $? -ne 0 ]; then
-    echo "ERROR: NLTK download failed!"
-    exit 1
+if [ ! -f "$PKL_FILE" ]; then
+    echo "FILE NOT FOUND: $PKL_FILE"
+    echo ""
+    echo "End: $(date '+%Y-%m-%d %H:%M:%S')"
+    exit 0
 fi
 
-# Download wn library data - English WordNet first, then OMW
-echo "Downloading English WordNet (oewn:2024)..."
-python3 -c "import wn; wn.download('oewn:2024')"
-if [ $? -ne 0 ]; then
-    echo "WARNING: oewn download returned non-zero (may already exist)"
-fi
-
-echo "Downloading Open Multilingual Wordnet (omw:1.4)..."
-python3 -c "import wn; wn.download('omw:1.4')"
-if [ $? -ne 0 ]; then
-    echo "WARNING: omw download returned non-zero (may already exist)"
-fi
-echo "Data download complete."
+# File exists - report size
+SIZE_BYTES=$(stat -c%s "$PKL_FILE")
+SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
+echo "FILE EXISTS: $PKL_FILE"
+echo "SIZE: ${SIZE_MB} MB ($SIZE_BYTES bytes)"
 echo ""
 
-# Step 3: Run the concept map builder
-echo "=== STEP 3: Building concept map ==="
-python3 pipeline/build_concept_map.py
+# Load and analyze with Python
+python3 << 'PYEOF'
+import pickle
+import sys
 
-exit_code=$?
+try:
+    with open("data/concept_wordnet_map.pkl", "rb") as f:
+        data = pickle.load(f)
+except Exception as e:
+    print(f"ERROR loading pkl: {e}")
+    sys.exit(1)
 
-echo ""
-echo "=== BUILD FINISHED ==="
-echo "Exit code: $exit_code"
+print(f"TOTAL SYNSETS: {len(data)}")
+print("")
 
-# Verify output file exists and show size
-if [ -f /mnt/pgdata/morphlex/data/concept_wordnet_map.pkl ]; then
-    echo "Output file exists:"
-    ls -lh /mnt/pgdata/morphlex/data/concept_wordnet_map.pkl
-else
-    echo "ERROR: Output file not created!"
-fi
+# Per-language coverage
+lang_counts = {}
+entries_4plus = []
 
-echo ""
-echo "End: $(date -Iseconds)"
+for synset_id, langs in data.items():
+    if isinstance(langs, dict):
+        num_langs = len(langs)
+        for lang in langs.keys():
+            lang_counts[lang] = lang_counts.get(lang, 0) + 1
+        if num_langs >= 4 and len(entries_4plus) < 5:
+            entries_4plus.append((synset_id, langs))
+
+print("PER-LANGUAGE COVERAGE:")
+for lang in sorted(lang_counts.keys()):
+    print(f"  {lang}: {lang_counts[lang]}")
+print("")
+
+print("5 SAMPLE ENTRIES WITH 4+ LANGUAGES:")
+for synset_id, langs in entries_4plus:
+    lang_list = ", ".join(sorted(langs.keys()))
+    print(f"  {synset_id}: [{lang_list}]")
+    for lang, words in sorted(langs.items()):
+        if isinstance(words, list):
+            print(f"    {lang}: {words[:3]}")
+        else:
+            print(f"    {lang}: {words}")
+    print("")
+PYEOF
+
+echo "End: $(date '+%Y-%m-%d %H:%M:%S')"
