@@ -2,7 +2,8 @@
 """
 PHASE 5a: Build WordNet Concept Map with Open Multilingual Wordnet
 
-Builds a mapping of all WordNet synsets to their words in every available language.
+Uses the ILI (Inter-Lingual Index) to link concepts across all OMW languages.
+The ILI is the bridge that connects the same concept in different languages.
 
 Output: data/concept_wordnet_map.pkl
 Structure: {
@@ -10,7 +11,7 @@ Structure: {
         'pos': 'NOUN' | 'VERB' | 'ADJ' | 'ADV',
         'definition': 'English definition string',
         'words': {
-            'eng': ['word1', 'word2'],
+            'en': ['word1', 'word2'],
             'arb': ['word1'],
             ...all available OMW languages
         }
@@ -18,12 +19,6 @@ Structure: {
 }
 
 ZERO HARDCODING. ZERO SHORTCUTS. ALL SYNSETS PROCESSED.
-
-wn library API reference (verified by diagnostic):
-- Lexicon properties: id, language, label, version
-- Synset properties: id, pos, ili
-- Synset methods: definition(), lemmas(), senses(), words()
-- Word methods: lemma(), forms()
 """
 import os
 import pickle
@@ -68,24 +63,24 @@ def get_pos_label(pos_char):
 
 
 def build_concept_map():
-    """Build the concept map from WordNet synsets."""
+    """Build the concept map from WordNet synsets using ILI cross-language lookup."""
     log("=" * 70)
-    log("PHASE 5a: Building WordNet Concept Map")
+    log("PHASE 5a: Building WordNet Concept Map (ILI-based)")
     log("=" * 70)
 
-    # Get all available lexicons
+    # Get all available lexicons and their languages
     lexicons = list(wn.lexicons())
     log(f"\nDiscovered {len(lexicons)} lexicons")
 
-    # Collect unique language codes - NOTE: lex.language is a PROPERTY, not method
+    # Build language code set from lexicons
     lang_codes = set()
     for lex in lexicons:
-        lang_codes.add(lex.language)  # PROPERTY, not lex.language()
-
+        lang_codes.add(lex.language)
     lang_codes = sorted(lang_codes)
     log(f"Unique language codes: {len(lang_codes)}")
+    log(f"Languages: {', '.join(lang_codes)}")
 
-    # Find English WordNet
+    # Find English WordNet for base synsets
     eng_wordnet = None
     for wn_id in ['oewn:2024', 'ewn:2020', 'omw-en:1.4', 'omw-en31:1.4']:
         try:
@@ -98,7 +93,6 @@ def build_concept_map():
     if eng_wordnet is None:
         eng_lexicons = [l for l in lexicons if l.language == 'en']
         if eng_lexicons:
-            # NOTE: lex.id is a PROPERTY, not method
             eng_wordnet = wn.Wordnet(eng_lexicons[0].id)
             log(f"Using English lexicon: {eng_lexicons[0].id}")
         else:
@@ -106,7 +100,7 @@ def build_concept_map():
 
     all_synsets = list(eng_wordnet.synsets())
     total_synsets = len(all_synsets)
-    log(f"Total synsets to process: {total_synsets:,}")
+    log(f"Total English synsets to process: {total_synsets:,}")
 
     # Build the concept map
     concept_map = {}
@@ -114,17 +108,16 @@ def build_concept_map():
 
     start_time = time.time()
 
-    for i, synset in enumerate(all_synsets):
-        # NOTE: synset.id is a PROPERTY, not method
+    for synset in all_synsets:
         synset_id = synset.id
 
-        # Get definition - NOTE: definition() is a METHOD (singular)
+        # Get definition
         try:
             definition = synset.definition() or ""
         except Exception:
             definition = ""
 
-        # Get POS - NOTE: synset.pos is a PROPERTY, not method
+        # Get POS
         try:
             pos_char = synset.pos
             pos_label = get_pos_label(pos_char)
@@ -132,30 +125,37 @@ def build_concept_map():
             pos_char = synset_id.split('-')[-1] if '-' in synset_id else 'n'
             pos_label = get_pos_label(pos_char)
 
-        # Collect words from all languages
+        # Collect words from all languages using ILI
         words_by_lang = defaultdict(list)
 
-        # Get words using ILI - NOTE: synset.ili is a PROPERTY, not method
+        # THE KEY FIX: Use ILI to find synsets in ALL languages
+        # wn.synsets(ili=ili) searches ALL loaded lexicons
         try:
             ili = synset.ili
             if ili:
-                for lex in lexicons:
+                # Get all synsets across ALL lexicons that share this ILI
+                matching_synsets = wn.synsets(ili=ili)
+                for ms in matching_synsets:
+                    # Get language from the synset's lexicon
                     try:
-                        matching_synsets = list(lex.synsets(ili=ili))
-                        for ms in matching_synsets:
-                            lang = lex.language  # PROPERTY
-                            # words() is a METHOD, returns Word objects
-                            for word in ms.words():
-                                # lemma() is a METHOD on Word
-                                form = word.lemma()
-                                if form and form not in words_by_lang[lang]:
-                                    words_by_lang[lang].append(form)
+                        ms_lexicon = ms.lexicon()
+                        lang = ms_lexicon.language
+                    except Exception:
+                        # Fallback: try to get from synset id pattern
+                        continue
+
+                    # Collect words from this synset
+                    try:
+                        for word in ms.words():
+                            form = word.lemma()
+                            if form and form not in words_by_lang[lang]:
+                                words_by_lang[lang].append(form)
                     except Exception:
                         pass
         except Exception:
             pass
 
-        # Also get English words directly
+        # Also ensure English words from the original synset are included
         try:
             for word in synset.words():
                 form = word.lemma()
@@ -239,12 +239,19 @@ def main():
     log("=" * 70)
     multilingual = [(sid, d) for sid, d in concept_map.items() if len(d['words']) >= 4]
     log(f"Found {len(multilingual):,} synsets with 4+ languages")
-    samples = random.sample(multilingual, min(5, len(multilingual)))
-    for i, (sid, data) in enumerate(samples, 1):
-        log(f"\n[{i}] {sid} ({data['pos']})")
-        log(f"    Def: {data['definition'][:80]}...")
-        for lang in sorted(data['words'].keys())[:6]:
-            log(f"    {lang}: {', '.join(data['words'][lang][:3])}")
+    if len(multilingual) > 0:
+        samples = random.sample(multilingual, min(5, len(multilingual)))
+        for i, (sid, data) in enumerate(samples, 1):
+            log(f"\n[{i}] {sid} ({data['pos']})")
+            defn = data['definition']
+            if len(defn) > 80:
+                defn = defn[:77] + "..."
+            log(f"    Def: {defn}")
+            for lang in sorted(data['words'].keys())[:8]:
+                words = data['words'][lang][:3]
+                log(f"    {lang}: {', '.join(words)}")
+    else:
+        log("No multilingual synsets found!")
 
     log("\n" + "=" * 70)
     log("PHASE 5a COMPLETE")
