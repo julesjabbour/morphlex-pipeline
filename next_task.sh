@@ -1,13 +1,12 @@
 #!/bin/bash
-# DATA QUALITY CHECK on master_table.csv
-# Timestamp: 2026-04-09-data-quality-check-v1
-# - Read-only diagnostic
-# - Print stats on morph_type, root, wiktextract_match, POS
-# - No file modifications
+# BACKFILL ENGLISH MORPH_TYPE from wiktextract_match
+# Timestamp: 2026-04-09-backfill-en-morph-type-v1
+# - Update morph_type for English rows where UNKNOWN but wiktextract_match has type=
+# - Parse type= value and overwrite UNKNOWN
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== DATA QUALITY CHECK: master_table.csv ==="
+echo "=== BACKFILL ENGLISH MORPH_TYPE ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -16,8 +15,8 @@ echo ""
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-# Run the data quality check
-python3 pipeline/data_quality_check.py
+# Run the backfill script
+python3 pipeline/backfill_english_morph_type.py
 
 RESULT=$?
 
