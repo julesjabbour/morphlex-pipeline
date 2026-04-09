@@ -1,13 +1,13 @@
 #!/bin/bash
-# INSTALL MORPHOLEX FOR ENGLISH
-# Timestamp: 2026-04-09-install-morpholex-v1
-# - Download MorphoLex xlsx to /mnt/pgdata/morphlex/MorphoLex-en/
-# - Test English adapter with 5 words
-# - Re-analyze all English rows in master_table.csv
+# COMPARE MORPHOLEX vs WIKTEXTRACT FOR ENGLISH
+# Timestamp: 2026-04-09-compare-morpholex-wiktextract-v1
+# - Read master_table.csv English rows
+# - Compare morph_type/root from MorphoLex adapter vs wiktextract_match
+# - Create english_comparison.csv with agreement analysis
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== INSTALL MORPHOLEX FOR ENGLISH ==="
+echo "=== COMPARE MORPHOLEX vs WIKTEXTRACT FOR ENGLISH ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -16,8 +16,8 @@ echo ""
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-# Run the install script
-python3 pipeline/install_morpholex.py
+# Run the comparison script
+python3 scripts/compare_morpholex_wiktextract.py
 
 RESULT=$?
 
