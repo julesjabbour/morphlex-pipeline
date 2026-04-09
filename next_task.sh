@@ -1,13 +1,13 @@
 #!/bin/bash
-# PHASE 3: Full Wiktextract Morphology Extraction
-# Timestamp: 2026-04-08-full-wikt-morph
-# Purpose: Process ENTIRE 2.4GB dump, extract all morphology data
-# Expected runtime: 30-120 minutes (DO NOT TIMEOUT)
-# NO HARDCODING. NO SHORTCUTS. FULL DUMP PROCESSING.
+# PHASE 5a: Install WordNet + OMW and Build Concept Map
+# Timestamp: 2026-04-09-wordnet-omw-concept-map
+# Purpose: Install WordNet/OMW, build pkl mapping synsets to multilingual words
+# Expected runtime: 10-30 minutes
+# NO HARDCODING. NO SHORTCUTS. ALL SYNSETS PROCESSED.
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== PHASE 3: WIKTEXTRACT FULL MORPHOLOGY EXTRACTION ==="
+echo "=== PHASE 5a: WORDNET + OMW CONCEPT MAP ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -18,32 +18,53 @@ git fetch origin && git reset --hard origin/main
 echo "Now at: $(git rev-parse HEAD)"
 echo ""
 
-echo "=== EXTRACTION PARAMETERS ==="
-echo "Input: /mnt/pgdata/morphlex/data/raw-wiktextract-data.jsonl.gz (2.4GB)"
-echo "Output: /mnt/pgdata/morphlex/data/wiktextract_morphology.pkl"
-echo "Target languages: ar, de, en, grc, he, ine-pro, ja, la, sa, tr, zh"
-echo ""
-echo "Templates to extract:"
-echo "  Derivation: af, affix, prefix, suffix, confix, circumfix, infix"
-echo "  Compound: compound, com"
-echo "  Etymology: inh, bor, der, cog"
-echo ""
-echo "NOTE: This will take 30-120 minutes. DO NOT INTERRUPT."
+# Step 1: Install packages
+echo "=== STEP 1: Installing packages ==="
+pip install nltk wn --break-system-packages
+if [ $? -ne 0 ]; then
+    echo "ERROR: pip install failed!"
+    exit 1
+fi
+echo "Package installation complete."
 echo ""
 
-# Run full extraction
-python3 pipeline/extract_wiktextract_morphology.py
+# Step 2: Download WordNet data (NLTK)
+echo "=== STEP 2: Downloading WordNet/OMW data ==="
+python3 -c "import nltk; nltk.download('wordnet'); nltk.download('omw-1.4')"
+if [ $? -ne 0 ]; then
+    echo "ERROR: NLTK download failed!"
+    exit 1
+fi
+
+# Download wn library data - English WordNet first, then OMW
+echo "Downloading English WordNet (oewn:2024)..."
+python3 -c "import wn; wn.download('oewn:2024')"
+if [ $? -ne 0 ]; then
+    echo "WARNING: oewn download returned non-zero (may already exist)"
+fi
+
+echo "Downloading Open Multilingual Wordnet (omw:1.4)..."
+python3 -c "import wn; wn.download('omw:1.4')"
+if [ $? -ne 0 ]; then
+    echo "WARNING: omw download returned non-zero (may already exist)"
+fi
+echo "Data download complete."
+echo ""
+
+# Step 3: Run the concept map builder
+echo "=== STEP 3: Building concept map ==="
+python3 pipeline/build_concept_map.py
 
 exit_code=$?
 
 echo ""
-echo "=== EXTRACTION FINISHED ==="
+echo "=== BUILD FINISHED ==="
 echo "Exit code: $exit_code"
 
 # Verify output file exists and show size
-if [ -f /mnt/pgdata/morphlex/data/wiktextract_morphology.pkl ]; then
+if [ -f /mnt/pgdata/morphlex/data/concept_wordnet_map.pkl ]; then
     echo "Output file exists:"
-    ls -lh /mnt/pgdata/morphlex/data/wiktextract_morphology.pkl
+    ls -lh /mnt/pgdata/morphlex/data/concept_wordnet_map.pkl
 else
     echo "ERROR: Output file not created!"
 fi
