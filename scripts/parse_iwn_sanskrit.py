@@ -5,9 +5,11 @@ FIXED: The english_id column (index 2) contains raw numbers like 975187.
 These need to be zero-padded to 8 digits and combined with POS from
 column 3 (english_category_x) to make PWN IDs like 00975187-n.
 
-BRIDGE: Sanskrit IWN uses PWN 3.0 synset IDs. Our concept_wordnet_map.pkl uses
-OEWN (Open English WordNet) IDs. These are DIFFERENT numbers for the SAME concepts.
-We use the PWN 3.0 -> OEWN bridge map (built via ILI) to convert.
+BRIDGE: Sanskrit IWN uses PWN 2.1 synset IDs (NOT PWN 3.0!). Our concept_wordnet_map.pkl
+uses OEWN (Open English WordNet) IDs. We use the full bridge:
+  IWN offset (PWN 2.1) -> PWN 3.0 -> OEWN
+This bridge is built by download_pwn_and_build_bridge.py using Princeton's
+official 2.1to3.0 mapping files.
 
 The Sanskrit words are in column 8 (sanskrit_synset), comma-separated.
 
@@ -29,7 +31,8 @@ DATA_DIR = Path("/mnt/pgdata/morphlex/data/open_wordnets/iwn-en")
 OUTPUT_DIR = Path("/mnt/pgdata/morphlex/data/open_wordnets")
 OUTPUT_FILE = OUTPUT_DIR / "sanskrit_synset_map.pkl"
 CONCEPT_MAP_FILE = Path("/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl")
-BRIDGE_MAP_FILE = OUTPUT_DIR / "pwn30_to_oewn_map.pkl"
+# Use the full IWN -> OEWN bridge (built via PWN 2.1 -> 3.0 -> OEWN)
+BRIDGE_MAP_FILE = OUTPUT_DIR / "iwn_to_oewn_bridge.pkl"
 
 
 def log(msg):
@@ -106,32 +109,33 @@ def main():
     log(f"Start: {start_time.isoformat()}")
     log("")
 
-    # Step 0: Load PWN 3.0 -> OEWN bridge map
+    # Step 0: Load IWN -> OEWN bridge map (built via PWN 2.1 -> 3.0 -> OEWN)
     log("=" * 70)
-    log("STEP 0: LOAD PWN 3.0 -> OEWN BRIDGE MAP")
+    log("STEP 0: LOAD IWN -> OEWN BRIDGE MAP")
     log("=" * 70)
     log("")
 
-    pwn_to_oewn = {}
+    iwn_to_oewn = {}
     if BRIDGE_MAP_FILE.exists():
         log(f"Loading {BRIDGE_MAP_FILE}...")
         try:
             with open(BRIDGE_MAP_FILE, 'rb') as f:
-                pwn_to_oewn = pickle.load(f)
-            log(f"Loaded {len(pwn_to_oewn):,} PWN -> OEWN mappings")
+                iwn_to_oewn = pickle.load(f)
+            log(f"Loaded {len(iwn_to_oewn):,} IWN -> OEWN mappings")
+            log("(Built via PWN 2.1 -> PWN 3.0 -> OEWN chain)")
 
             # Show sample mappings
             log("5 sample mappings:")
-            for pwn, oewn in list(pwn_to_oewn.items())[:5]:
-                log(f"  {pwn} -> {oewn}")
+            for iwn, oewn in list(iwn_to_oewn.items())[:5]:
+                log(f"  {iwn} -> {oewn}")
             log("")
         except Exception as e:
             log(f"FATAL: Could not load bridge map: {e}")
-            log("Run build_pwn30_to_oewn_bridge.py first!")
+            log("Run download_pwn_and_build_bridge.py first!")
             sys.exit(1)
     else:
         log(f"FATAL: Bridge map not found: {BRIDGE_MAP_FILE}")
-        log("Run build_pwn30_to_oewn_bridge.py first!")
+        log("Run download_pwn_and_build_bridge.py first!")
         sys.exit(1)
 
     # Also load concept_wordnet_map to validate overlap
@@ -359,14 +363,14 @@ def main():
                     log(f"  SKIP row {total_rows}: english_id={english_id}, pos={pos_str} -> no valid PWN ID")
                 continue
 
-            # Pick the ID that exists in bridge map (for proper mapping to OEWN)
+            # Pick the ID that exists in IWN->OEWN bridge map
             # For adjectives, try both 'a' and 's' variants
-            pwn_id = None
+            iwn_id = None
             oewn_id = None
             for pid in possible_ids:
-                if pid in pwn_to_oewn:
-                    pwn_id = pid
-                    oewn_id = pwn_to_oewn[pid]
+                if pid in iwn_to_oewn:
+                    iwn_id = pid
+                    oewn_id = iwn_to_oewn[pid]
                     bridged_count += 1
                     break
 
@@ -374,8 +378,8 @@ def main():
             if oewn_id is None:
                 for pid in possible_ids:
                     if pid in concept_synsets:
-                        pwn_id = pid
-                        oewn_id = pid  # Same ID (rare case where PWN==OEWN)
+                        iwn_id = pid
+                        oewn_id = pid  # Same ID (rare case where IWN==OEWN)
                         unbridged_count += 1
                         break
 
@@ -385,7 +389,7 @@ def main():
                 skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                 skipped += 1
                 if total_rows <= 10:
-                    log(f"  SKIP row {total_rows}: PWN IDs {possible_ids} not in bridge map")
+                    log(f"  SKIP row {total_rows}: IWN IDs {possible_ids} not in bridge map")
                 continue
 
             # Sanskrit text might have multiple words separated by comma
@@ -412,7 +416,7 @@ def main():
 
             # Show first few successful mappings
             if mapped <= 5:
-                log(f"  MAPPED row {total_rows}: {english_id} + {pos_str} -> PWN:{pwn_id} -> OEWN:{oewn_id} -> {words[:3]}")
+                log(f"  MAPPED row {total_rows}: {english_id} + {pos_str} -> IWN:{iwn_id} -> OEWN:{oewn_id} -> {words[:3]}")
 
             if total_rows % 5000 == 0:
                 log(f"  Processed {total_rows:,}, mapped {mapped:,}, synsets {len(synset_map):,}")
@@ -471,8 +475,8 @@ def main():
     log("DIAGNOSTIC: VERIFY OEWN SYNSET OVERLAP")
     log("=" * 70)
     log("")
-    log("Sanskrit synsets are now OEWN IDs (via PWN->OEWN bridge).")
-    log("Overlap should now be in the thousands, not ~60.")
+    log("Sanskrit synsets are now OEWN IDs (via IWN PWN 2.1 -> 3.0 -> OEWN bridge).")
+    log("Overlap should now be in the thousands, not ~50.")
     log("")
 
     if CONCEPT_MAP_FILE.exists():
