@@ -357,28 +357,88 @@ def main():
             preview += f"... (+{len(words)-3})"
         log(f"  {sid}: [{preview}]")
 
-    # Check overlap
+    # Check overlap with detailed diagnostics
     log("")
-    log("Checking overlap with concept_wordnet_map.pkl...")
+    log("=" * 70)
+    log("DIAGNOSTIC: COMPARE SYNSET ID FORMATS")
+    log("=" * 70)
+    log("")
+
     if CONCEPT_MAP_FILE.exists():
         try:
             with open(CONCEPT_MAP_FILE, 'rb') as f:
                 concept_map = pickle.load(f)
 
+            # Show 10 raw keys from concept_map
+            log("10 SAMPLE KEYS from concept_wordnet_map.pkl (RAW):")
+            raw_keys = list(concept_map.keys())[:10]
+            for k in raw_keys:
+                log(f"  '{k}'")
+
+            log("")
+
+            # Extract synset IDs
             concept_synsets = set()
             for k in concept_map.keys():
                 m = re.search(r'(\d{8})-([nvasr])', str(k))
                 if m:
                     concept_synsets.add(f"{m.group(1)}-{m.group(2)}")
 
+            log("10 SAMPLE KEYS from concept_wordnet_map.pkl (EXTRACTED):")
+            for sid in list(concept_synsets)[:10]:
+                log(f"  '{sid}'")
+
+            log("")
+            log("10 SAMPLE KEYS from sanskrit_synset_map:")
+            for sid in list(synset_map.keys())[:10]:
+                log(f"  '{sid}'")
+
+            log("")
+
+            # Check for common patterns - look at first overlapping ones
             overlap = concept_synsets & set(synset_map.keys())
             log(f"concept_map synsets: {len(concept_synsets):,}")
             log(f"Sanskrit synsets: {len(synset_map):,}")
             log(f"Overlap: {len(overlap):,}")
             if concept_synsets:
                 log(f"Coverage: {100*len(overlap)/len(concept_synsets):.1f}%")
+
+            if overlap:
+                log("")
+                log("5 OVERLAPPING SYNSETS:")
+                for sid in list(overlap)[:5]:
+                    log(f"  {sid}")
+
+            # Analyze non-overlapping IDs to find pattern
+            log("")
+            log("ANALYZING NON-OVERLAPPING IDS:")
+            sanskrit_only = set(synset_map.keys()) - concept_synsets
+            log(f"Sanskrit-only synsets: {len(sanskrit_only):,}")
+            log("10 sample Sanskrit-only IDs:")
+            for sid in list(sanskrit_only)[:10]:
+                log(f"  '{sid}'")
+
+            # Check offset lengths
+            log("")
+            log("OFFSET LENGTH ANALYSIS:")
+            concept_lengths = {}
+            for sid in concept_synsets:
+                offset = sid.split('-')[0]
+                length = len(offset)
+                concept_lengths[length] = concept_lengths.get(length, 0) + 1
+            log(f"concept_map offset lengths: {concept_lengths}")
+
+            sanskrit_lengths = {}
+            for sid in synset_map.keys():
+                offset = sid.split('-')[0]
+                length = len(offset)
+                sanskrit_lengths[length] = sanskrit_lengths.get(length, 0) + 1
+            log(f"sanskrit_map offset lengths: {sanskrit_lengths}")
+
         except Exception as e:
             log(f"ERROR: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
     else:
         log(f"Not found: {CONCEPT_MAP_FILE}")
 
