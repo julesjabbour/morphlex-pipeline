@@ -3,6 +3,11 @@
 
 Paginates through /api/lemmas (112,512 lemmas, ~1,126 pages at 100 per page).
 Saves checkpoint after every page. Resumes from last checkpoint on restart.
+
+Key behaviors:
+- If checkpoint shows all pages done, skip download and write final output immediately
+- Final output contains ONLY lemma list (no checkpoint metadata)
+- All errors logged visibly, zero suppression
 """
 
 import json
@@ -28,11 +33,11 @@ OUTPUT_FILE = DATA_DIR / "harvard_agwn_lemmas.json"
 OLD_FILE = DATA_DIR / "harvard_agwn.json"
 
 
-def fetch_page(page_num: int, offset: int) -> dict:
+def fetch_page(page_num: int, offset: int) -> tuple:
     """Fetch a single page from the API with retries and exponential backoff.
 
-    Returns the JSON response dict, or None if all retries failed.
-    Also returns error info for logging.
+    Returns (data, error_status, error_message) tuple.
+    data is the JSON response dict, or None if all retries failed.
     """
     url = f"{BASE_URL}/api/lemmas/?limit={PAGE_SIZE}&offset={offset}"
 
@@ -64,7 +69,7 @@ def fetch_page(page_num: int, offset: int) -> dict:
             last_error_message = f"JSONDecodeError: {e.msg}"
             print(f"  [Page {page_num}] JSONDecodeError: {e.msg} (attempt {attempt + 1}/{MAX_RETRIES})")
 
-        except TimeoutError as e:
+        except TimeoutError:
             last_error_status = None
             last_error_message = "Request timeout"
             print(f"  [Page {page_num}] TimeoutError (attempt {attempt + 1}/{MAX_RETRIES})")
@@ -85,21 +90,60 @@ def fetch_page(page_num: int, offset: int) -> dict:
 
 
 def load_checkpoint() -> dict:
-    """Load checkpoint file if it exists."""
-    if CHECKPOINT_FILE.exists():
+    """Load checkpoint file if it exists. Returns None if no checkpoint."""
+    if not CHECKPOINT_FILE.exists():
+        return None
+
+    try:
         with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
             checkpoint = json.load(f)
-            print(f"Loaded checkpoint: page {checkpoint['last_completed_page']}, "
-                  f"{len(checkpoint['lemmas'])} lemmas, "
-                  f"{len(checkpoint['failed_pages'])} failed pages")
-            return checkpoint
-    return None
+
+        # Validate checkpoint has required fields
+        required_fields = ['last_completed_page', 'total_pages', 'lemmas', 'failed_pages']
+        for field in required_fields:
+            if field not in checkpoint:
+                print(f"WARNING: Checkpoint missing field '{field}', starting fresh")
+                return None
+
+        print(f"Loaded checkpoint: page {checkpoint['last_completed_page']}/{checkpoint['total_pages']}, "
+              f"{len(checkpoint['lemmas'])} lemmas, "
+              f"{len(checkpoint['failed_pages'])} failed pages")
+        return checkpoint
+
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Checkpoint file is corrupt: {e}")
+        print("Starting fresh download")
+        return None
+    except OSError as e:
+        print(f"ERROR: Cannot read checkpoint: {e}")
+        return None
 
 
 def save_checkpoint(checkpoint: dict) -> None:
     """Save checkpoint file."""
-    with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(checkpoint, f, ensure_ascii=False)
+    try:
+        with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(checkpoint, f, ensure_ascii=False)
+    except OSError as e:
+        print(f"ERROR: Failed to save checkpoint: {e}")
+        raise
+
+
+def write_final_output(lemmas: list) -> None:
+    """Write the final output file containing only the lemma list."""
+    print(f"Writing final output: {OUTPUT_FILE}")
+    print(f"Total lemmas to write: {len(lemmas):,}")
+
+    try:
+        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(lemmas, f, ensure_ascii=False, indent=2)
+
+        output_size = OUTPUT_FILE.stat().st_size
+        print(f"Output file written: {OUTPUT_FILE}")
+        print(f"Output size: {output_size:,} bytes ({output_size / 1024 / 1024:.2f} MB)")
+    except OSError as e:
+        print(f"FATAL: Cannot write output file: {e}")
+        raise
 
 
 def main():
@@ -127,6 +171,56 @@ def main():
     # Check for existing checkpoint
     checkpoint = load_checkpoint()
 
+    # CRITICAL: If checkpoint exists and shows all pages complete, write output immediately
+    if checkpoint is not None:
+        last_completed = checkpoint['last_completed_page']
+        total_pages = checkpoint['total_pages']
+
+        if last_completed >= total_pages:
+            print()
+            print("=" * 70)
+            print("CHECKPOINT SHOWS DOWNLOAD COMPLETE - WRITING FINAL OUTPUT")
+            print("=" * 70)
+            print(f"Last completed page: {last_completed}")
+            print(f"Total pages: {total_pages}")
+            print(f"Lemmas in checkpoint: {len(checkpoint['lemmas']):,}")
+            print(f"Failed pages: {len(checkpoint['failed_pages'])}")
+            print()
+
+            # Write final output from checkpoint data
+            write_final_output(checkpoint['lemmas'])
+
+            # Print summary
+            print()
+            print("=" * 70)
+            print("SUMMARY (from checkpoint)")
+            print("=" * 70)
+            print(f"Total pages: {total_pages}")
+            print(f"Total lemmas: {len(checkpoint['lemmas']):,}")
+            print(f"Failed pages: {len(checkpoint['failed_pages'])}")
+
+            if checkpoint['failed_pages']:
+                print()
+                print("Failed pages detail:")
+                for fp in checkpoint['failed_pages']:
+                    print(f"  Page {fp['page']} (offset {fp['offset']}): "
+                          f"status={fp.get('status')}, error={fp.get('error')}")
+
+            # Remove checkpoint only if no failed pages
+            if not checkpoint['failed_pages']:
+                CHECKPOINT_FILE.unlink()
+                print("Checkpoint removed (all pages succeeded)")
+            else:
+                print("Checkpoint retained (contains failed page records)")
+
+            end_time = datetime.now()
+            duration = end_time - start_time
+            print()
+            print(f"Duration: {duration}")
+            print(f"End: {end_time.isoformat()}")
+            return
+
+    # Either no checkpoint or checkpoint is incomplete - need to download
     if checkpoint:
         lemmas = checkpoint['lemmas']
         failed_pages = checkpoint['failed_pages']
@@ -223,13 +317,8 @@ def main():
     print("DOWNLOAD COMPLETE")
     print("=" * 70)
 
-    # Save final output
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(lemmas, f, ensure_ascii=False, indent=2)
-
-    output_size = OUTPUT_FILE.stat().st_size
-    print(f"Output file: {OUTPUT_FILE}")
-    print(f"Output size: {output_size:,} bytes ({output_size / 1024 / 1024:.2f} MB)")
+    # Write final output file
+    write_final_output(lemmas)
 
     # Remove checkpoint on complete success (no failed pages)
     if not failed_pages:
@@ -252,7 +341,7 @@ def main():
         print("Failed pages detail:")
         for fp in failed_pages:
             print(f"  Page {fp['page']} (offset {fp['offset']}): "
-                  f"status={fp['status']}, error={fp['error']}")
+                  f"status={fp.get('status')}, error={fp.get('error')}")
 
     end_time = datetime.now()
     duration = end_time - start_time
