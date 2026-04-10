@@ -2,9 +2,10 @@
 """Build AGWN synset-to-lemma lookup from Harvard Greek WordNet API.
 
 Strategy decision:
-1. First fetch page 1 of /api/synsets and inspect structure
-2. If lemmas ARE included: paginate through /api/synsets (1,078 pages)
-3. If lemmas are NOT included: query /api/lemmas/{lemma}/{pos}/synsets for each lemma (112K calls)
+1. First try to fetch page 1 of /api/synsets and inspect structure
+2. If synsets endpoint fails (timeout, error), fall back to per-lemma queries
+3. If lemmas ARE included in synset entries: paginate through /api/synsets (1,078 pages)
+4. If lemmas are NOT included: query /api/lemmas/{lemma}/{pos}/synsets for each lemma (112K calls)
 
 Output: data/agwn/agwn_synset_lookup.pkl
 Format: {synset_offset_pos: [lemma1, lemma2, ...], ...}
@@ -16,19 +17,20 @@ Zero error suppression. All exceptions logged visibly.
 import json
 import os
 import pickle
+import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 # Configuration
 BASE_URL = "https://greekwordnet.chs.harvard.edu"
 PAGE_SIZE = 100
-DELAY_BETWEEN_REQUESTS = 0.5  # 500ms
+DELAY_BETWEEN_REQUESTS = 1.0  # 1 second between requests (rate limit protection)
+REQUEST_TIMEOUT = 60  # 60 second timeout per request
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 2  # seconds, doubles each retry
 LEMMA_BATCH_SIZE = 1000  # For per-lemma approach
@@ -61,7 +63,7 @@ def fetch_url(url: str, description: str) -> tuple:
                 url,
                 headers={'User-Agent': 'Mozilla/5.0 MorphlexPipeline/1.0'}
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 return data, None, None
 
@@ -159,7 +161,6 @@ def extract_synset_offset(synset_data: dict) -> str:
     if uri:
         # URI might be like "http://wordnet-rdf.princeton.edu/wn31/00001740-n"
         # or "https://greekwordnet.chs.harvard.edu/synset/00001740-n"
-        import re
         match = re.search(r'(\d{8})-([nvasr])', uri)
         if match:
             return f"{match.group(1)}-{match.group(2)}"
@@ -170,7 +171,8 @@ def extract_synset_offset(synset_data: dict) -> str:
 def inspect_synsets_structure():
     """Fetch page 1 of /api/synsets and print structure of first 2 entries.
 
-    Returns True if lemmas are included in synset entries, False otherwise.
+    Returns (lemmas_included, total_pages, total_count, endpoint_failed).
+    If the endpoint fails after all retries, returns (False, 0, 0, True) to trigger fallback.
     """
     log("=" * 70)
     log("STEP 1: INSPECT /api/synsets STRUCTURE")
@@ -182,8 +184,10 @@ def inspect_synsets_structure():
     data, err_status, err_msg = fetch_url(url, "synsets-page-1")
 
     if data is None:
-        log(f"FATAL: Cannot fetch /api/synsets. Status: {err_status}, Error: {err_msg}")
-        sys.exit(1)
+        log(f"WARNING: Cannot fetch /api/synsets. Status: {err_status}, Error: {err_msg}")
+        log("")
+        log("Synsets endpoint failed, falling back to per-lemma queries")
+        return False, 0, 0, True  # endpoint_failed = True
 
     total_count = data.get('count', 0)
     total_pages = (total_count + PAGE_SIZE - 1) // PAGE_SIZE
@@ -220,7 +224,7 @@ def inspect_synsets_structure():
         log("DECISION: Lemmas are NOT included in synset entries")
         log("Strategy: Fall back to per-lemma queries")
 
-    return lemmas_included, total_pages, total_count
+    return lemmas_included, total_pages, total_count, False  # endpoint_failed = False
 
 
 def build_via_synsets(total_pages: int):
@@ -535,7 +539,6 @@ def generate_report(synset_lookup: dict, failed_items: list, output_size: int):
             concept_synsets = set()
             for synset_id in concept_map.keys():
                 # Normalize synset ID format
-                import re
                 match = re.search(r'(\d{8})-([nvasr])', synset_id)
                 if match:
                     norm_id = f"{match.group(1)}-{match.group(2)}"
@@ -553,7 +556,7 @@ def generate_report(synset_lookup: dict, failed_items: list, output_size: int):
                 log(f"Overlap percentage: {overlap_pct:.1f}% of concept_map synsets have AGWN coverage")
 
         except Exception as e:
-            log(f"ERROR loading concept_wordnet_map.pkl: {e}")
+            log(f"ERROR loading concept_wordnet_map.pkl: {type(e).__name__}: {e}")
     else:
         log(f"concept_wordnet_map.pkl not found at {CONCEPT_MAP_FILE}")
 
@@ -631,14 +634,15 @@ def main():
             log(f"End: {end_time.isoformat()}")
             return
 
-    # Step 1: Inspect synsets structure
-    lemmas_included, total_pages, total_synsets = inspect_synsets_structure()
+    # Step 1: Inspect synsets structure (with fallback on failure)
+    lemmas_included, total_pages, total_synsets, endpoint_failed = inspect_synsets_structure()
 
     # Step 2: Build lookup using appropriate strategy
-    if lemmas_included:
-        synset_lookup, failed_items = build_via_synsets(total_pages)
-    else:
+    # If synsets endpoint failed or lemmas not included, use per-lemma approach
+    if endpoint_failed or not lemmas_included:
         synset_lookup, failed_items = build_via_lemmas()
+    else:
+        synset_lookup, failed_items = build_via_synsets(total_pages)
 
     # Step 3: Write output
     output_size = write_output(synset_lookup)
