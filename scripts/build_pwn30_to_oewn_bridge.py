@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build PWN 3.0 → OEWN synset ID bridge using ILI (Interlingual Index).
+"""Build PWN 3.0 -> OEWN synset ID bridge using ILI (Interlingual Index).
 
 PROBLEM: Our concept_wordnet_map.pkl uses OEWN (Open English WordNet) synset IDs
 like oewn-00001740-a. Sanskrit IWN data uses PWN 3.0 offsets like 01796323-a.
@@ -19,6 +19,12 @@ Output format: {pwn30_id: oewn_id, ...}
 This bridge is also needed for Latin and Greek - save as shared resource.
 
 Zero error suppression. All exceptions logged visibly.
+
+IMPORTANT: The wn package uses PROPERTIES not METHODS for:
+  - lex.id, lex.label, lex.language (NOT lex.id(), lex.label(), lex.language())
+  - synset.id, synset.pos, synset.ili (NOT synset.id(), synset.pos(), synset.ili())
+  - word.lemma (NOT word.lemma())
+Only .synsets(), .words(), .definition(), .examples(), .senses() use parentheses.
 """
 
 import os
@@ -45,9 +51,9 @@ def synset_to_offset_pos(synset):
     """Extract offset-pos ID from a wn Synset object.
 
     E.g., 'oewn-00001740-a' -> '00001740-a'
-    or from synset.id() directly.
+    Uses synset.id (property, not method).
     """
-    sid = synset.id()
+    sid = synset.id  # PROPERTY not method
     # Handle formats like 'oewn-00001740-a' or 'omw-en-00001740-a'
     match = re.search(r'(\d{8})-([nvasr])', sid)
     if match:
@@ -94,7 +100,7 @@ def main():
     installed = list(wn.lexicons())
     log(f"Currently installed: {len(installed)} lexicons")
     for lex in installed[:10]:
-        log(f"  {lex.id()} ({lex.label()})")
+        log(f"  {lex.id} ({lex.label})")  # PROPERTIES not methods
     if len(installed) > 10:
         log(f"  ... and {len(installed) - 10} more")
     log("")
@@ -139,7 +145,7 @@ def main():
     log("Updated installed wordnets:")
     installed = list(wn.lexicons())
     for lex in installed:
-        log(f"  {lex.id()} ({lex.label()})")
+        log(f"  {lex.id} ({lex.label})")  # PROPERTIES not methods
     log("")
 
     # Step 3: Load lexicons and build ILI maps
@@ -153,7 +159,7 @@ def main():
     oewn_lexicon = None
 
     for lex in installed:
-        lex_id = lex.id()
+        lex_id = lex.id  # PROPERTY not method
         log(f"Examining lexicon: {lex_id}")
         if 'omw-en' in lex_id:
             pwn_lexicon = lex
@@ -171,22 +177,23 @@ def main():
         sys.exit(1)
 
     log("")
-    log(f"PWN 3.0 lexicon: {pwn_lexicon.id()}")
-    log(f"OEWN lexicon: {oewn_lexicon.id()}")
+    log(f"PWN 3.0 lexicon: {pwn_lexicon.id}")  # PROPERTY not method
+    log(f"OEWN lexicon: {oewn_lexicon.id}")  # PROPERTY not method
     log("")
 
     # Build ILI -> OEWN offset map
     log("Building ILI -> OEWN offset map...")
     ili_to_oewn = {}
-    oewn_synsets = list(oewn_lexicon.synsets())
+    oewn_synsets = list(oewn_lexicon.synsets())  # .synsets() IS a method
     log(f"  OEWN synsets: {len(oewn_synsets):,}")
 
     for synset in oewn_synsets:
-        ili = synset.ili()
+        ili = synset.ili  # PROPERTY not method
         if ili:
             offset_pos = synset_to_offset_pos(synset)
             if offset_pos:
-                ili_key = ili.id() if hasattr(ili, 'id') else str(ili)
+                # ili.id is a PROPERTY not method
+                ili_key = ili.id if hasattr(ili, 'id') else str(ili)
                 ili_to_oewn[ili_key] = offset_pos
 
     log(f"  ILI -> OEWN mappings: {len(ili_to_oewn):,}")
@@ -194,7 +201,7 @@ def main():
 
     # Build PWN 3.0 offset -> ILI map, then compose to get PWN -> OEWN
     log("Building PWN 3.0 offset -> OEWN offset bridge...")
-    pwn_synsets = list(pwn_lexicon.synsets())
+    pwn_synsets = list(pwn_lexicon.synsets())  # .synsets() IS a method
     log(f"  PWN 3.0 synsets: {len(pwn_synsets):,}")
 
     pwn_to_oewn = {}
@@ -206,12 +213,13 @@ def main():
         if not pwn_offset:
             continue
 
-        ili = synset.ili()
+        ili = synset.ili  # PROPERTY not method
         if not ili:
             no_ili_count += 1
             continue
 
-        ili_key = ili.id() if hasattr(ili, 'id') else str(ili)
+        # ili.id is a PROPERTY not method
+        ili_key = ili.id if hasattr(ili, 'id') else str(ili)
 
         if ili_key in ili_to_oewn:
             oewn_offset = ili_to_oewn[ili_key]

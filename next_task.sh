@@ -1,7 +1,7 @@
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
 echo "========================================================================"
-echo "TASK: BUILD PWN 3.0 -> OEWN BRIDGE AND FIX SANSKRIT PARSER"
+echo "TASK: BUILD PWN 3.0 -> OEWN BRIDGE AND FIX SANSKRIT PARSER (FIX PROPS)"
 echo "========================================================================"
 echo ""
 
