@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Parse Ancient Greek WordNet (jcuenod) data and build PWN synset-to-Greek word mapping.
+"""Parse Ancient Greek WordNet (jcuenod) SQL INSERT files and build PWN synset-to-Greek word mapping.
 
-REWRITTEN to explore actual data structure first, then parse.
+Data is in .sql files containing INSERT statements, NOT SQLite databases.
+Key files:
+  - greek_lemma_1.sql, greek_lemma_2.sql (lemma definitions)
+  - greek_synset.sql (synset to PWN offset mapping)
+  - greek_synonyms_1.sql through greek_synonyms_5.sql (synset to lemma mappings)
 
 Output: data/open_wordnets/agwn_synset_map.pkl
 Format: {synset_offset_pos: [greek_word1, greek_word2, ...], ...}
@@ -12,7 +16,6 @@ Zero error suppression. All exceptions logged visibly.
 import os
 import pickle
 import re
-import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +30,7 @@ def log(msg):
     print(msg, flush=True)
 
 
-def parse_pwn_id(synset_str):
+def parse_pwn_id(synset_str, pos=None):
     """Extract PWN offset+pos from various synset ID formats."""
     if not synset_str:
         return None
@@ -38,7 +41,7 @@ def parse_pwn_id(synset_str):
     if m:
         return f"{m.group(1)}-{m.group(2)}"
 
-    # eng-30-00001740-n
+    # eng-30-00001740-n or eng:30:00001740:n
     m = re.search(r'eng[-_:]30[-_:](\d{8})[-_:]([nvasr])', s, re.I)
     if m:
         return f"{m.group(1)}-{m.group(2)}"
@@ -53,25 +56,100 @@ def parse_pwn_id(synset_str):
     if m:
         return f"{m.group(1)}-{m.group(2)}"
 
+    # Just 8 digits, use provided pos
+    if pos:
+        m = re.search(r'^(\d{8})$', s)
+        if m:
+            pos_char = pos[0].lower() if pos else None
+            if pos_char in 'nvasr':
+                return f"{m.group(1)}-{pos_char}"
+
     return None
 
 
-def find_db_files(data_dir):
-    """Find SQLite database files in directory."""
-    db_files = []
-    for f in data_dir.rglob('*'):
-        if not f.is_file():
-            continue
-        if f.suffix in ['.db', '.sqlite', '.sqlite3']:
-            db_files.append(f)
-        else:
-            try:
-                with open(f, 'rb') as fp:
-                    if fp.read(16).startswith(b'SQLite format 3'):
-                        db_files.append(f)
-            except Exception:
-                pass
-    return db_files
+def parse_sql_insert_values(line):
+    """Parse VALUES from a SQL INSERT statement.
+
+    Handles: INSERT INTO table (cols) VALUES (val1, val2, ...);
+    Returns list of tuples of values.
+    """
+    # Find VALUES clause
+    values_match = re.search(r'VALUES\s*(.+)$', line, re.I)
+    if not values_match:
+        return []
+
+    values_str = values_match.group(1)
+
+    # Extract individual value tuples
+    result = []
+    # Match (val1, val2, ...) patterns
+    pattern = r'\(([^)]+)\)'
+
+    for match in re.finditer(pattern, values_str):
+        values_content = match.group(1)
+        # Parse comma-separated values, respecting quotes
+        values = []
+        current = ""
+        in_quote = False
+        quote_char = None
+
+        for char in values_content:
+            if char in "'" '"' and not in_quote:
+                in_quote = True
+                quote_char = char
+            elif char == quote_char and in_quote:
+                in_quote = False
+                quote_char = None
+            elif char == ',' and not in_quote:
+                values.append(current.strip().strip("'\""))
+                current = ""
+                continue
+            current += char
+
+        if current.strip():
+            values.append(current.strip().strip("'\""))
+
+        if values:
+            result.append(tuple(values))
+
+    return result
+
+
+def parse_sql_file_streaming(filepath, callback):
+    """Parse SQL file line by line, calling callback for each row of values.
+
+    This avoids loading entire file into memory for large files.
+    """
+    count = 0
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('--'):
+                continue
+
+            # Parse values
+            values = parse_sql_insert_values(line)
+            for row in values:
+                count += 1
+                callback(row)
+
+    return count
+
+
+def extract_columns_from_file(filepath):
+    """Extract column names from first INSERT statement."""
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('--'):
+                continue
+
+            # Try to extract column names from INSERT INTO table (col1, col2, ...)
+            col_match = re.search(r'INSERT\s+INTO\s+\w+\s*\(([^)]+)\)', line, re.I)
+            if col_match:
+                return [c.strip().strip('`"[]') for c in col_match.group(1).split(',')]
+
+    return None
 
 
 def main():
@@ -100,227 +178,226 @@ def main():
     log(f"Directory: {DATA_DIR}")
     log("")
 
-    # Find all files
-    all_files = [f for f in DATA_DIR.rglob('*') if f.is_file()]
-    log(f"Total files: {len(all_files)}")
-
-    for f in all_files[:30]:
+    # Find all SQL files
+    sql_files = list(DATA_DIR.rglob('*.sql'))
+    log(f"Total SQL files: {len(sql_files)}")
+    for f in sorted(sql_files, key=lambda x: x.stat().st_size, reverse=True)[:15]:
         log(f"  {f.relative_to(DATA_DIR)} ({f.stat().st_size:,} bytes)")
-    if len(all_files) > 30:
-        log(f"  ... and {len(all_files)-30} more")
+    if len(sql_files) > 15:
+        log(f"  ... and {len(sql_files)-15} more")
 
-    # Find SQLite files
-    db_files = find_db_files(DATA_DIR)
+    # Find key Greek files
+    greek_sql = [f for f in sql_files if 'greek' in f.name.lower()]
     log(f"")
-    log(f"SQLite files: {len(db_files)}")
+    log(f"Greek SQL files: {len(greek_sql)}")
+    for f in greek_sql:
+        log(f"  {f.name} ({f.stat().st_size:,} bytes)")
 
-    # Also check for CSV/TSV/JSON
-    csv_files = [f for f in all_files if f.suffix in ['.csv', '.tsv', '.json', '.txt']]
-    log(f"CSV/TSV/JSON files: {len(csv_files)}")
-
-    # Step 2: Explore data structure
+    # Step 2: Explore SQL structure
     log("")
     log("=" * 70)
-    log("STEP 2: EXPLORE DATA STRUCTURE")
+    log("STEP 2: EXPLORE SQL STRUCTURE")
     log("=" * 70)
     log("")
 
-    if db_files:
-        for db_file in db_files[:3]:
-            log(f"Database: {db_file.name}")
+    # Show first 20 lines of key files
+    key_files = ['greek_lemma_1.sql', 'greek_synset.sql', 'greek_synonyms_1.sql']
+    for key_name in key_files:
+        matches = [f for f in sql_files if f.name == key_name]
+        if matches:
+            sql_file = matches[0]
+            log(f"File: {sql_file.name}")
             log("-" * 50)
-
-            try:
-                conn = sqlite3.connect(str(db_file))
-                cursor = conn.cursor()
-
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                tables = [r[0] for r in cursor.fetchall()]
-                log(f"Tables: {tables}")
-
-                for table in tables[:10]:
-                    log(f"")
-                    log(f"  Table: {table}")
-                    cursor.execute(f"PRAGMA table_info('{table}')")
-                    cols = cursor.fetchall()
-                    col_names = [c[1] for c in cols]
-                    log(f"    Columns: {col_names}")
-
-                    cursor.execute(f"SELECT COUNT(*) FROM '{table}'")
-                    row_count = cursor.fetchone()[0]
-                    log(f"    Rows: {row_count:,}")
-
-                    cursor.execute(f"SELECT * FROM '{table}' LIMIT 3")
-                    for row in cursor.fetchall():
-                        log(f"    Sample: {row}")
-
-                conn.close()
-
-            except Exception as e:
-                log(f"  ERROR: {type(e).__name__}: {e}")
+            with open(sql_file, 'r', encoding='utf-8', errors='replace') as f:
+                for i, line in enumerate(f):
+                    if i >= 20:
+                        break
+                    log(f"  {line.rstrip()[:120]}")
             log("")
 
-    if csv_files:
-        for csv_file in csv_files[:3]:
-            log(f"Data file: {csv_file.name}")
-            try:
-                with open(csv_file, 'r', encoding='utf-8') as f:
-                    for i, line in enumerate(f):
-                        if i >= 10:
-                            break
-                        log(f"  {line.rstrip()[:100]}")
-            except Exception as e:
-                log(f"  ERROR: {e}")
-            log("")
-
-    # Step 3: Parse data
+    # Step 3: Parse SQL files
     log("")
     log("=" * 70)
-    log("STEP 3: PARSE DATA")
+    log("STEP 3: PARSE SQL DATA")
     log("=" * 70)
     log("")
 
     synset_map = {}
+
+    # Build lemma_id -> lemma word mapping from greek_lemma_*.sql
+    lemma_dict = {}
+    lemma_files = sorted([f for f in sql_files if 'lemma' in f.name.lower() and 'greek' in f.name.lower()])
+
+    log(f"Building lemma dictionary from {len(lemma_files)} files...")
+    for sql_file in lemma_files:
+        log(f"  Processing: {sql_file.name}")
+        columns = extract_columns_from_file(sql_file)
+        log(f"    Columns: {columns}")
+
+        if columns:
+            # Find lemma_id and lemma columns
+            id_idx = None
+            lemma_idx = None
+            for i, col in enumerate(columns):
+                col_lower = col.lower()
+                if 'id' in col_lower and id_idx is None:
+                    id_idx = i
+                if col_lower in ['lemma', 'word', 'form', 'written_form', 'lemma_written']:
+                    lemma_idx = i
+
+            if id_idx is not None and lemma_idx is not None:
+                def add_lemma(row):
+                    if len(row) > max(id_idx, lemma_idx):
+                        lemma_id = row[id_idx]
+                        lemma = row[lemma_idx]
+                        if lemma_id and lemma:
+                            lemma_dict[lemma_id] = lemma
+
+                count = parse_sql_file_streaming(sql_file, add_lemma)
+                log(f"    Processed {count:,} rows")
+
+                # Show sample
+                sample_keys = list(lemma_dict.keys())[:3]
+                for k in sample_keys:
+                    log(f"    Sample: {k} -> {lemma_dict[k]}")
+
+    log(f"  Lemma dictionary: {len(lemma_dict):,} entries")
+    log("")
+
+    # Build synset_id -> offset mapping from greek_synset.sql
+    synset_offset_map = {}
+    synset_pos_map = {}
+    synset_files = [f for f in sql_files if 'synset' in f.name.lower() and 'greek' in f.name.lower()]
+
+    log(f"Building synset offset map from {len(synset_files)} files...")
+    for sql_file in synset_files:
+        log(f"  Processing: {sql_file.name}")
+        columns = extract_columns_from_file(sql_file)
+        log(f"    Columns: {columns}")
+
+        if columns:
+            # Find synset_id, offset, pos columns
+            id_idx = None
+            offset_idx = None
+            pos_idx = None
+
+            for i, col in enumerate(columns):
+                col_lower = col.lower()
+                if col_lower in ['id', 'synset_id'] and id_idx is None:
+                    id_idx = i
+                if col_lower in ['offset', 'wn_offset', 'pwn_offset', 'synset_offset']:
+                    offset_idx = i
+                if col_lower in ['pos', 'part_of_speech']:
+                    pos_idx = i
+
+            if id_idx is not None and offset_idx is not None:
+                def add_synset(row):
+                    if len(row) > max(id_idx, offset_idx):
+                        synset_id = row[id_idx]
+                        offset = row[offset_idx]
+                        pos = row[pos_idx] if pos_idx is not None and len(row) > pos_idx else None
+                        if synset_id and offset:
+                            synset_offset_map[synset_id] = offset
+                            if pos:
+                                synset_pos_map[synset_id] = pos
+
+                count = parse_sql_file_streaming(sql_file, add_synset)
+                log(f"    Processed {count:,} rows")
+
+                # Show sample
+                sample_keys = list(synset_offset_map.keys())[:3]
+                for k in sample_keys:
+                    log(f"    Sample: {k} -> {synset_offset_map[k]}")
+
+    log(f"  Synset offset map: {len(synset_offset_map):,} entries")
+    log("")
+
+    # Parse greek_synonyms_*.sql to get synset_id -> lemma_id mappings
+    synonym_files = sorted([f for f in sql_files if 'synonym' in f.name.lower() and 'greek' in f.name.lower()])
     total_rows = 0
     mapped = 0
     skipped = 0
 
-    # Parse SQLite databases
-    for db_file in db_files:
-        log(f"Processing: {db_file.name}")
+    log(f"Processing synonyms from {len(synonym_files)} files...")
+    for sql_file in synonym_files:
+        log(f"  Processing: {sql_file.name}")
+        columns = extract_columns_from_file(sql_file)
+        log(f"    Columns: {columns}")
 
-        try:
-            conn = sqlite3.connect(str(db_file))
-            cursor = conn.cursor()
+        if not columns:
+            log(f"    SKIP: No columns found")
+            continue
 
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [r[0] for r in cursor.fetchall()]
+        # Find synset_id and lemma_id columns
+        synset_idx = None
+        lemma_id_idx = None
 
-            for table in tables:
-                cursor.execute(f"PRAGMA table_info('{table}')")
-                cols_info = cursor.fetchall()
-                cols = [c[1].lower() for c in cols_info]
-                original_cols = {c[1].lower(): c[1] for c in cols_info}
+        for i, col in enumerate(columns):
+            col_lower = col.lower()
+            if 'synset' in col_lower and synset_idx is None:
+                synset_idx = i
+            if 'lemma' in col_lower and lemma_id_idx is None:
+                lemma_id_idx = i
 
-                # Find synset and lemma columns
-                synset_col = None
-                lemma_col = None
+        if synset_idx is None or lemma_id_idx is None:
+            log(f"    SKIP: Could not find synset/lemma columns")
+            continue
 
-                for c in cols:
-                    if synset_col is None:
-                        if c in ['synset', 'synset_id', 'offset', 'wn_synset', 'pwn', 'wn30', 'id', 'synset_offset']:
-                            synset_col = c
-                        elif 'synset' in c or 'offset' in c:
-                            synset_col = c
+        log(f"    Using: synset_idx={synset_idx}, lemma_id_idx={lemma_id_idx}")
 
-                for c in cols:
-                    if lemma_col is None:
-                        if c in ['lemma', 'word', 'form', 'literal', 'greek', 'grc', 'grc_lemma', 'ancient_greek']:
-                            lemma_col = c
-                        elif 'lemma' in c or 'word' in c or 'greek' in c or 'grc' in c:
-                            lemma_col = c
+        file_rows = 0
+        file_mapped = 0
 
-                if not synset_col or not lemma_col:
-                    continue
+        def process_synonym(row):
+            nonlocal total_rows, mapped, skipped, file_rows, file_mapped
 
-                log(f"  Table {table}: synset={synset_col}, lemma={lemma_col}")
+            file_rows += 1
+            total_rows += 1
 
-                sc = original_cols.get(synset_col, synset_col)
-                lc = original_cols.get(lemma_col, lemma_col)
+            if len(row) <= max(synset_idx, lemma_id_idx):
+                skipped += 1
+                return
 
-                cursor.execute(f'SELECT "{sc}", "{lc}" FROM "{table}"')
-                for row in cursor:
-                    total_rows += 1
-                    synset_id, lemma = row
+            synset_id = row[synset_idx]
+            lemma_id = row[lemma_id_idx]
 
-                    if not synset_id or not lemma:
-                        skipped += 1
-                        continue
+            if not synset_id or not lemma_id:
+                skipped += 1
+                return
 
-                    lemma = str(lemma).strip()
-                    if not lemma:
-                        skipped += 1
-                        continue
+            # Get lemma word
+            lemma = lemma_dict.get(lemma_id)
+            if not lemma:
+                skipped += 1
+                return
 
-                    pwn_id = parse_pwn_id(synset_id)
-                    if pwn_id:
-                        if pwn_id in synset_map:
-                            if lemma not in synset_map[pwn_id]:
-                                synset_map[pwn_id].append(lemma)
-                        else:
-                            synset_map[pwn_id] = [lemma]
-                        mapped += 1
-                    else:
-                        skipped += 1
+            # Get PWN offset
+            offset = synset_offset_map.get(synset_id)
+            pos = synset_pos_map.get(synset_id)
 
-            conn.close()
+            if offset:
+                pwn_id = parse_pwn_id(offset, pos)
+            else:
+                pwn_id = parse_pwn_id(synset_id, pos)
 
-        except Exception as e:
-            log(f"  ERROR: {type(e).__name__}: {e}")
+            if not pwn_id:
+                skipped += 1
+                return
 
-    # Parse CSV/TSV files if any
-    for csv_file in csv_files:
-        if csv_file.suffix == '.json':
-            continue  # Skip JSON for now
+            if pwn_id in synset_map:
+                if lemma not in synset_map[pwn_id]:
+                    synset_map[pwn_id].append(lemma)
+            else:
+                synset_map[pwn_id] = [lemma]
 
-        log(f"Processing: {csv_file.name}")
-        try:
-            import csv as csv_module
-            with open(csv_file, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-            delim = '\t' if first_line.count('\t') > first_line.count(',') else ','
+            mapped += 1
+            file_mapped += 1
 
-            with open(csv_file, 'r', encoding='utf-8') as f:
-                reader = csv_module.reader(f, delimiter=delim)
-                header = next(reader, None)
-                if not header:
-                    continue
-
-                header_lower = [h.lower() for h in header]
-
-                synset_col = None
-                lemma_col = None
-
-                for i, h in enumerate(header_lower):
-                    if synset_col is None and ('synset' in h or 'offset' in h or h == 'pwn'):
-                        synset_col = i
-                    if lemma_col is None and ('lemma' in h or 'word' in h or 'greek' in h or 'grc' in h):
-                        lemma_col = i
-
-                if synset_col is None or lemma_col is None:
-                    continue
-
-                log(f"  Columns: synset={header[synset_col]}, lemma={header[lemma_col]}")
-
-                for row in reader:
-                    total_rows += 1
-                    if len(row) <= max(synset_col, lemma_col):
-                        skipped += 1
-                        continue
-
-                    synset_id = row[synset_col]
-                    lemma = row[lemma_col].strip()
-
-                    if not synset_id or not lemma:
-                        skipped += 1
-                        continue
-
-                    pwn_id = parse_pwn_id(synset_id)
-                    if pwn_id:
-                        if pwn_id in synset_map:
-                            if lemma not in synset_map[pwn_id]:
-                                synset_map[pwn_id].append(lemma)
-                        else:
-                            synset_map[pwn_id] = [lemma]
-                        mapped += 1
-                    else:
-                        skipped += 1
-
-        except Exception as e:
-            log(f"  ERROR: {type(e).__name__}: {e}")
+        parse_sql_file_streaming(sql_file, process_synonym)
+        log(f"    Rows: {file_rows:,}, mapped: {file_mapped:,}")
 
     log("")
-    log(f"Total rows: {total_rows:,}")
+    log(f"Total synonym rows: {total_rows:,}")
     log(f"Mapped: {mapped:,}")
     log(f"Skipped: {skipped:,}")
     log(f"Unique PWN synsets: {len(synset_map):,}")

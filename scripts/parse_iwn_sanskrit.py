@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Parse IWN-En TSV files to build PWN synset-to-Sanskrit word mapping.
 
-REWRITTEN to explore actual file structure first, then parse.
+FIXED: The english_id column (index 2) contains raw numbers like 975187.
+These need to be zero-padded to 8 digits and combined with POS from
+column 3 (english_category_x) to make PWN IDs like 00975187-n.
+
+The Sanskrit words are in column 8 (sanskrit_synset), comma-separated.
 
 Output: data/open_wordnets/sanskrit_synset_map.pkl
 Format: {synset_offset_pos: [sanskrit_word1, sanskrit_word2, ...], ...}
@@ -27,28 +31,55 @@ def log(msg):
     print(msg, flush=True)
 
 
-def parse_pwn_id(synset_str):
-    """Extract PWN offset+pos from various synset ID formats."""
-    if not synset_str:
+def pos_to_char(pos_str):
+    """Convert POS string to single character for PWN ID."""
+    if not pos_str:
         return None
-    s = str(synset_str).strip()
-
-    # eng-30-00001740-n or eng:30:00001740:n
-    m = re.search(r'eng[-_:]30[-_:](\d{8})[-_:]([nvasr])', s, re.I)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-
-    # Plain 8-digit-pos
-    m = re.search(r'(\d{8})[-_]([nvasr])', s)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-
-    # 8 digits followed immediately by pos
-    m = re.search(r'^(\d{8})([nvasr])$', s)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-
+    pos = pos_str.strip().upper()
+    if pos in ['NOUN', 'N']:
+        return 'n'
+    elif pos in ['VERB', 'V']:
+        return 'v'
+    elif pos in ['ADJECTIVE', 'ADJ', 'A', 'S']:
+        return 'a'
+    elif pos in ['ADVERB', 'ADV', 'R']:
+        return 'r'
     return None
+
+
+def make_pwn_id(english_id, pos_str):
+    """Create PWN ID from raw number and POS.
+
+    english_id: raw number like 975187
+    pos_str: POS like 'NOUN' or 'ADJECTIVE'
+    Returns: '00975187-n' format
+    """
+    if not english_id or not pos_str:
+        return None
+
+    # Clean and extract numeric ID
+    id_str = str(english_id).strip()
+    if not id_str:
+        return None
+
+    # Extract just the digits
+    digits = re.sub(r'\D', '', id_str)
+    if not digits:
+        return None
+
+    # Zero-pad to 8 digits
+    padded = digits.zfill(8)
+
+    # If more than 8 digits, take last 8
+    if len(padded) > 8:
+        padded = padded[-8:]
+
+    # Get POS character
+    pos_char = pos_to_char(pos_str)
+    if not pos_char:
+        return None
+
+    return f"{padded}-{pos_char}"
 
 
 def main():
@@ -92,23 +123,26 @@ def main():
     log(f"Data files: {len(data_files)}")
 
     # Look for Sanskrit-related files
-    sanskrit_files = [f for f in all_files if 'sanskrit' in f.name.lower() or 'san' in f.name.lower()]
+    sanskrit_files = [f for f in all_files if 'sanskrit' in f.name.lower()]
     log(f"Sanskrit-named files: {len(sanskrit_files)}")
     for f in sanskrit_files:
         log(f"  {f.name}")
 
     # Check for specific target
-    target = DATA_DIR / "english-hindi-sanskrit-linked.tsv"
+    target = DATA_DIR / "data" / "english-hindi-sanskrit-linked.tsv"
+    if not target.exists():
+        target = DATA_DIR / "english-hindi-sanskrit-linked.tsv"
+
     log("")
     if target.exists():
-        log(f"Target file EXISTS: {target.name}")
+        log(f"Target file EXISTS: {target}")
         data_file = target
     elif sanskrit_files:
         data_file = sanskrit_files[0]
-        log(f"Using Sanskrit file: {data_file.name}")
+        log(f"Using Sanskrit file: {data_file}")
     elif data_files:
         data_file = data_files[0]
-        log(f"Using first data file: {data_file.name}")
+        log(f"Using first data file: {data_file}")
     else:
         log("FATAL: No data files found")
         sys.exit(1)
@@ -152,14 +186,18 @@ def main():
         for i, col in enumerate(header):
             indicators = []
             cl = col.lower()
-            if 'sanskrit' in cl or cl in ['san', 'sa']:
+            if 'sanskrit' in cl:
                 indicators.append('SANSKRIT')
-            if 'english' in cl or 'eng' in cl or 'pwn' in cl or 'wn' in cl:
-                indicators.append('ENGLISH/PWN')
+            if 'english' in cl:
+                indicators.append('ENGLISH')
             if 'hindi' in cl:
                 indicators.append('HINDI')
-            if 'synset' in cl or 'offset' in cl or cl == 'id':
-                indicators.append('SYNSET_ID')
+            if 'category' in cl or 'pos' in cl:
+                indicators.append('POS')
+            if 'synset' in cl:
+                indicators.append('SYNSET')
+            if 'id' in cl:
+                indicators.append('ID')
             ind_str = f" <- {', '.join(indicators)}" if indicators else ""
             log(f"  [{i}] {col}{ind_str}")
 
@@ -170,112 +208,89 @@ def main():
     log("=" * 70)
     log("")
 
+    # FIXED column indices based on task description:
+    # Column 2 (english_id) - raw numbers like 975187
+    # Column 3 (english_category_x) - POS like NOUN, ADJECTIVE, VERB
+    # Column 8 (sanskrit_synset) - comma-separated Sanskrit words
+    ENGLISH_ID_COL = 2
+    POS_COL = 3
+    SANSKRIT_COL = 8
+
+    log(f"Using FIXED columns:")
+    log(f"  english_id (raw number): column {ENGLISH_ID_COL}")
+    log(f"  english_category_x (POS): column {POS_COL}")
+    log(f"  sanskrit_synset (words): column {SANSKRIT_COL}")
+    log("")
+
     synset_map = {}
     total_rows = 0
     mapped = 0
     skipped = 0
+    skip_reasons = {}
 
     with open(data_file, 'r', encoding='utf-8') as f:
         reader = csv.reader(f, delimiter=delimiter)
-        header = next(reader, None)
+        header = next(reader, None)  # Skip header
 
         if not header:
             log("FATAL: Empty file")
             sys.exit(1)
 
-        header_lower = [h.lower().strip() for h in header]
-
-        # Find column indices
-        synset_col = None
-        sanskrit_col = None
-        pos_col = None
-
-        for i, h in enumerate(header_lower):
-            # Synset column - look for English/PWN synset ID
-            if synset_col is None:
-                if 'english' in h and ('synset' in h or 'offset' in h or 'id' in h):
-                    synset_col = i
-                elif h in ['pwn', 'wn', 'synset', 'offset', 'eng_synset', 'english_synset_id', 'ewn']:
-                    synset_col = i
-                elif h.startswith('eng') and synset_col is None:
-                    synset_col = i
-
-            # Sanskrit column
-            if sanskrit_col is None:
-                if 'sanskrit' in h or h in ['san', 'sa', 'sanskrit_lemma', 'sanskrit_word']:
-                    sanskrit_col = i
-
-            # POS column
-            if pos_col is None:
-                if h in ['pos', 'part_of_speech', 'category']:
-                    pos_col = i
-
-        log(f"Column indices: synset={synset_col}, sanskrit={sanskrit_col}, pos={pos_col}")
-
-        # Fallback: if we can't find Sanskrit, try last column
-        if sanskrit_col is None and len(header) >= 3:
-            sanskrit_col = len(header) - 1
-            log(f"Fallback: using last column [{sanskrit_col}] = {header[sanskrit_col]} as Sanskrit")
-
-        # Fallback: if we can't find synset, try first column
-        if synset_col is None:
-            synset_col = 0
-            log(f"Fallback: using first column [{synset_col}] = {header[synset_col]} as synset")
-
-        if synset_col is None or sanskrit_col is None:
-            log("FATAL: Cannot determine column mapping")
-            sys.exit(1)
-
+        log(f"Header row: {header}")
+        log(f"Columns at indices: [{ENGLISH_ID_COL}]={header[ENGLISH_ID_COL] if len(header) > ENGLISH_ID_COL else 'N/A'}, "
+            f"[{POS_COL}]={header[POS_COL] if len(header) > POS_COL else 'N/A'}, "
+            f"[{SANSKRIT_COL}]={header[SANSKRIT_COL] if len(header) > SANSKRIT_COL else 'N/A'}")
         log("")
         log("Processing rows...")
 
         for row in reader:
             total_rows += 1
 
-            if len(row) <= max(synset_col, sanskrit_col):
+            # Check row has enough columns
+            if len(row) <= SANSKRIT_COL:
+                reason = "row_too_short"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                 skipped += 1
                 continue
 
-            synset_id = row[synset_col].strip()
-            sanskrit_text = row[sanskrit_col].strip()
+            english_id = row[ENGLISH_ID_COL].strip()
+            pos_str = row[POS_COL].strip()
+            sanskrit_text = row[SANSKRIT_COL].strip()
 
-            # Skip empty or null values
-            if not synset_id or not sanskrit_text:
+            # Skip empty english_id
+            if not english_id:
+                reason = "empty_english_id"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                 skipped += 1
                 continue
-            if sanskrit_text.lower() in ['', '-', 'na', 'n/a', 'null', 'none', 'nan']:
+
+            # Skip empty or null Sanskrit
+            if not sanskrit_text or sanskrit_text.lower() in ['', '-', 'na', 'n/a', 'null', 'none', 'nan']:
+                reason = "empty_sanskrit"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                 skipped += 1
                 continue
 
-            # Parse PWN ID
-            pwn_id = parse_pwn_id(synset_id)
-
-            # If no POS in synset ID, try to get from pos_col
-            if pwn_id is None and pos_col is not None and len(row) > pos_col:
-                # Try with just the digits + pos from pos column
-                m = re.search(r'(\d{8})', synset_id)
-                if m:
-                    pos = row[pos_col].strip().lower()
-                    if pos and pos[0] in 'nvasr':
-                        pwn_id = f"{m.group(1)}-{pos[0]}"
+            # Create PWN ID from raw number + POS
+            pwn_id = make_pwn_id(english_id, pos_str)
 
             if not pwn_id:
+                reason = "invalid_pwn_id"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                 skipped += 1
+                if total_rows <= 5:
+                    log(f"  SKIP row {total_rows}: english_id={english_id}, pos={pos_str} -> no valid PWN ID")
                 continue
 
-            # Sanskrit text might have multiple words separated by ; , or |
-            words = []
-            for sep in [';', ',', '|', '/']:
-                if sep in sanskrit_text:
-                    words = [w.strip() for w in sanskrit_text.split(sep)]
-                    break
-            if not words:
-                words = [sanskrit_text]
+            # Sanskrit text might have multiple words separated by comma
+            words = [w.strip() for w in sanskrit_text.split(',')]
 
             # Filter valid words
-            words = [w for w in words if w and w.lower() not in ['', '-', 'na', 'n/a', 'null', 'none']]
+            words = [w for w in words if w and w.lower() not in ['', '-', 'na', 'n/a', 'null', 'none', 'nan']]
 
             if not words:
+                reason = "no_valid_words"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                 skipped += 1
                 continue
 
@@ -289,7 +304,11 @@ def main():
 
             mapped += 1
 
-            if total_rows % 10000 == 0:
+            # Show first few successful mappings
+            if mapped <= 5:
+                log(f"  MAPPED row {total_rows}: {english_id} + {pos_str} -> {pwn_id} -> {words[:3]}")
+
+            if total_rows % 5000 == 0:
                 log(f"  Processed {total_rows:,}, mapped {mapped:,}, synsets {len(synset_map):,}")
 
     log("")
@@ -297,6 +316,10 @@ def main():
     log(f"Mapped: {mapped:,}")
     log(f"Skipped: {skipped:,}")
     log(f"Unique PWN synsets: {len(synset_map):,}")
+    log("")
+    log("Skip reasons:")
+    for reason, count in sorted(skip_reasons.items(), key=lambda x: -x[1]):
+        log(f"  {reason}: {count:,}")
 
     # Step 4: Write output
     log("")
