@@ -1,14 +1,13 @@
 #!/bin/bash
-# MERGE MORPHOLEX + WIKTEXTRACT FOR ENGLISH
-# Timestamp: 2026-04-09-merge-morpholex-wiktextract-v1
-# - Load master_table.csv
-# - Apply priority rule: COMPOUND_DERIVATION > COMPOUND > DERIVATION > ROOT > UNKNOWN
-# - Pick higher priority type, update root/derivation_info accordingly
-# - Save back to master_table.csv
+# DOWNLOAD AGWN AND REPLACE MODERN GREEK IN CONCEPT MAP
+# Timestamp: 2026-04-10-agwn-replacement-v1
+# - Download Ancient Greek WordNet data
+# - Build synset-to-Ancient-Greek lookup
+# - Replace Modern Greek (el) words with Ancient Greek words in concept_wordnet_map.pkl
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== MERGE MORPHOLEX + WIKTEXTRACT FOR ENGLISH ==="
+echo "=== DOWNLOAD AGWN AND REPLACE MODERN GREEK ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -17,8 +16,8 @@ echo ""
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-# Run the merge script
-python3 scripts/merge_morpholex_wiktextract.py
+# Run the replacement script
+python3 scripts/replace_modern_greek_with_agwn.py
 
 RESULT=$?
 
