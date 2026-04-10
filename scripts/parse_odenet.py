@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Parse German OdeNet via wn package and build PWN synset-to-German word mapping.
 
-Uses the wn Python package which should have odenet:1.4 installed.
-Maps ILI (Inter-Lingual Index) to PWN 3.0 synset offsets.
+REWRITTEN to properly handle wn package API (properties vs methods).
+Explores structure first, then parses.
 
 Output: data/open_wordnets/odenet_synset_map.pkl
 Format: {synset_offset_pos: [german_word1, german_word2, ...], ...}
-Example: {"00001740-n": ["Ding", "Sache"], ...}
 
 Zero error suppression. All exceptions logged visibly.
 """
@@ -18,345 +17,26 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Paths
 OUTPUT_DIR = Path("/mnt/pgdata/morphlex/data/open_wordnets")
 OUTPUT_FILE = OUTPUT_DIR / "odenet_synset_map.pkl"
 CONCEPT_MAP_FILE = Path("/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl")
 
 
 def log(msg):
-    """Print with immediate flush."""
     print(msg, flush=True)
 
 
-def explore_odenet():
-    """Explore OdeNet structure via wn package."""
-    log("=" * 70)
-    log("STEP 1: EXPLORE ODENET STRUCTURE")
-    log("=" * 70)
-    log("")
-
-    try:
-        import wn
-    except ImportError as e:
-        log(f"FATAL: Cannot import wn package: {e}")
-        log("Install with: pip install wn")
-        sys.exit(1)
-
-    # List available wordnets
-    log("Available wordnets in wn:")
-    for lexicon in wn.lexicons():
-        log(f"  - {lexicon.id()} ({lexicon.label()}) - {lexicon.language()}")
-    log("")
-
-    # Try to get OdeNet
-    try:
-        odenet = wn.Wordnet('odenet')
-        log(f"OdeNet loaded: {odenet}")
-    except wn.Error as e:
-        log(f"ERROR: OdeNet not found: {e}")
-        log("Attempting to download odenet:1.4...")
-        try:
-            wn.download('odenet:1.4', progress=False)
-            odenet = wn.Wordnet('odenet')
-            log("OdeNet downloaded and loaded successfully")
-        except Exception as e2:
-            log(f"FATAL: Cannot download/load OdeNet: {e2}")
-            sys.exit(1)
-
-    # Also get English PWN 3.0 for ILI mapping
-    try:
-        pwn = wn.Wordnet('ewn', 'en')
-    except wn.Error:
-        try:
-            pwn = wn.Wordnet('oewn', 'en')
-        except wn.Error:
-            log("WARNING: English WordNet not found for ILI mapping")
-            log("Attempting to download English WordNet...")
-            try:
-                wn.download('ewn:2020', progress=False)
-                pwn = wn.Wordnet('ewn', 'en')
-            except Exception:
-                try:
-                    wn.download('oewn:2024', progress=False)
-                    pwn = wn.Wordnet('oewn', 'en')
-                except Exception as e:
-                    log(f"WARNING: Cannot load English WordNet: {e}")
-                    pwn = None
-
-    # Explore synset structure
-    log("")
-    log("OdeNet synset structure exploration:")
-    log("")
-
-    synsets = list(odenet.synsets())[:5]
-    for i, synset in enumerate(synsets):
-        log(f"--- Sample synset {i + 1} ---")
-        log(f"  ID: {synset.id()}")
-        log(f"  POS: {synset.pos()}")
-
-        # Get words/lemmas
-        words = synset.words()
-        word_forms = [w.lemma() for w in words]
-        log(f"  Words: {word_forms}")
-
-        # Try to get ILI
-        try:
-            ili = synset.ili()
-            log(f"  ILI: {ili}")
-        except Exception as e:
-            log(f"  ILI: ERROR - {e}")
-
-        # Try to get relations
-        try:
-            hypernyms = synset.hypernyms()
-            log(f"  Hypernyms: {len(hypernyms)}")
-        except Exception as e:
-            log(f"  Hypernyms: ERROR - {e}")
-
-        log("")
-
-    log(f"Total OdeNet synsets: {len(list(odenet.synsets())):,}")
-    log("")
-
-    return odenet, pwn
-
-
-def ili_to_pwn_offset(ili, pwn=None):
-    """Convert ILI to PWN 3.0 offset+pos format.
-
-    ILI format is typically like 'i12345' (where 12345 is the ILI ID).
-    PWN 3.0 offset format is like '00001740-n'.
-
-    Strategy:
-    1. If we have PWN loaded, find synset by ILI and extract offset
-    2. Otherwise, try to parse ILI string directly if it contains offset info
-    """
-    if ili is None:
+def safe_attr(obj, attr):
+    """Safely get attribute, handling both property and method access."""
+    val = getattr(obj, attr, None)
+    if val is None:
         return None
-
-    ili_str = str(ili)
-
-    # Method 1: Use PWN to find synset by ILI
-    if pwn:
+    if callable(val):
         try:
-            # Find synsets in PWN that have this ILI
-            import wn
-            # Query all synsets with matching ILI
-            for ss in pwn.synsets():
-                try:
-                    if ss.ili() and str(ss.ili()) == ili_str:
-                        # Extract offset from synset ID
-                        # PWN synset IDs are like 'ewn-00001740-n' or 'oewn-00001740-n'
-                        ss_id = ss.id()
-                        match = re.search(r'(\d{8})-([nvasr])', ss_id)
-                        if match:
-                            return f"{match.group(1)}-{match.group(2)}"
-                except Exception:
-                    pass
+            return val()
         except Exception:
-            pass
-
-    # Method 2: Parse ILI string if it contains PWN offset info
-    # Some ILIs encode the offset directly
-    match = re.search(r'(\d{8})-([nvasr])', ili_str)
-    if match:
-        return f"{match.group(1)}-{match.group(2)}"
-
-    # Method 3: If ILI is just a number, we can't map it without PWN
-    # The ILI number doesn't directly correspond to PWN offset
-
-    return None
-
-
-def build_synset_map(odenet, pwn):
-    """Build PWN synset ID to German words mapping."""
-    log("=" * 70)
-    log("STEP 2: BUILD SYNSET MAP")
-    log("=" * 70)
-    log("")
-
-    synset_map = {}
-    total_synsets = 0
-    mapped_synsets = 0
-    skipped_no_ili = 0
-    skipped_no_pwn = 0
-
-    # Build ILI -> PWN offset cache from PWN
-    log("Building ILI to PWN offset cache...")
-    ili_to_offset = {}
-
-    if pwn:
-        for ss in pwn.synsets():
-            try:
-                ili = ss.ili()
-                if ili:
-                    # Extract offset from synset ID
-                    ss_id = ss.id()
-                    match = re.search(r'(\d{8})-([nvasr])', ss_id)
-                    if match:
-                        pwn_id = f"{match.group(1)}-{match.group(2)}"
-                        ili_to_offset[str(ili)] = pwn_id
-            except Exception:
-                pass
-        log(f"ILI cache built: {len(ili_to_offset):,} entries")
-    else:
-        log("WARNING: No PWN available, will attempt direct ILI parsing")
-    log("")
-
-    log("Processing OdeNet synsets...")
-    start_time = datetime.now()
-
-    for synset in odenet.synsets():
-        total_synsets += 1
-
-        # Get German words
-        words = synset.words()
-        german_words = [w.lemma() for w in words]
-
-        if not german_words:
-            continue
-
-        # Get ILI and map to PWN offset
-        try:
-            ili = synset.ili()
-            if not ili:
-                skipped_no_ili += 1
-                continue
-
-            ili_str = str(ili)
-
-            # Try cache first
-            pwn_id = ili_to_offset.get(ili_str)
-
-            # If not in cache, try direct parsing
-            if not pwn_id:
-                pwn_id = ili_to_pwn_offset(ili, None)
-
-            if not pwn_id:
-                skipped_no_pwn += 1
-                continue
-
-            # Add to map
-            if pwn_id in synset_map:
-                for word in german_words:
-                    if word not in synset_map[pwn_id]:
-                        synset_map[pwn_id].append(word)
-            else:
-                synset_map[pwn_id] = german_words.copy()
-
-            mapped_synsets += 1
-
-        except Exception as e:
-            log(f"ERROR processing synset {synset.id()}: {type(e).__name__}: {e}")
-
-        # Progress
-        if total_synsets % 10000 == 0:
-            elapsed = datetime.now() - start_time
-            log(f"  Processed {total_synsets:,} synsets, {mapped_synsets:,} mapped, elapsed: {elapsed}")
-
-    log("")
-    log(f"Total synsets processed: {total_synsets:,}")
-    log(f"Synsets mapped to PWN: {mapped_synsets:,}")
-    log(f"Skipped (no ILI): {skipped_no_ili:,}")
-    log(f"Skipped (no PWN mapping): {skipped_no_pwn:,}")
-
-    return synset_map
-
-
-def write_output(synset_map):
-    """Write pickle file."""
-    log("")
-    log("=" * 70)
-    log("STEP 3: WRITE OUTPUT")
-    log("=" * 70)
-    log("")
-
-    # Ensure output directory exists
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    log(f"Writing {len(synset_map):,} synset mappings to {OUTPUT_FILE}...")
-
-    try:
-        with open(OUTPUT_FILE, 'wb') as f:
-            pickle.dump(synset_map, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-        output_size = OUTPUT_FILE.stat().st_size
-        log(f"Output file written: {OUTPUT_FILE}")
-        log(f"Output size: {output_size:,} bytes ({output_size / 1024:.1f} KB)")
-        return output_size
-
-    except OSError as e:
-        log(f"FATAL: Cannot write output file: {e}")
-        raise
-
-
-def generate_report(synset_map, output_size):
-    """Generate final report."""
-    log("")
-    log("=" * 70)
-    log("REPORT")
-    log("=" * 70)
-    log("")
-
-    # Total synsets mapped
-    total_synsets = len(synset_map)
-    log(f"Total synsets mapped: {total_synsets:,}")
-
-    # Total words covered
-    total_words = sum(len(v) for v in synset_map.values())
-    log(f"Total German words: {total_words:,}")
-
-    # Average words per synset
-    if total_synsets > 0:
-        avg_words = total_words / total_synsets
-        log(f"Average words per synset: {avg_words:.2f}")
-
-    # 5 sample entries
-    log("")
-    log("5 sample entries:")
-    sample_items = list(synset_map.items())[:5]
-    for synset_id, words in sample_items:
-        words_preview = ', '.join(words[:5])
-        if len(words) > 5:
-            words_preview += f" ... (+{len(words) - 5} more)"
-        log(f"  {synset_id}: [{words_preview}]")
-
-    # File size
-    log("")
-    log(f"Output file size: {output_size:,} bytes ({output_size / 1024:.1f} KB)")
-
-    # Overlap with concept_wordnet_map.pkl
-    log("")
-    log("Checking overlap with concept_wordnet_map.pkl...")
-
-    if CONCEPT_MAP_FILE.exists():
-        try:
-            with open(CONCEPT_MAP_FILE, 'rb') as f:
-                concept_map = pickle.load(f)
-
-            concept_synsets = set()
-            for synset_id in concept_map.keys():
-                match = re.search(r'(\d{8})-([nvasr])', str(synset_id))
-                if match:
-                    norm_id = f"{match.group(1)}-{match.group(2)}"
-                    concept_synsets.add(norm_id)
-
-            odenet_synsets = set(synset_map.keys())
-            overlap = concept_synsets & odenet_synsets
-
-            log(f"concept_wordnet_map.pkl synsets: {len(concept_synsets):,}")
-            log(f"OdeNet synsets: {len(odenet_synsets):,}")
-            log(f"Overlap count: {len(overlap):,}")
-
-            if concept_synsets:
-                overlap_pct = 100.0 * len(overlap) / len(concept_synsets)
-                log(f"Overlap percentage: {overlap_pct:.1f}% of concept_map synsets have OdeNet coverage")
-
-        except Exception as e:
-            log(f"ERROR loading concept_wordnet_map.pkl: {type(e).__name__}: {e}")
-    else:
-        log(f"concept_wordnet_map.pkl not found at {CONCEPT_MAP_FILE}")
+            return None
+    return val
 
 
 def main():
@@ -364,7 +44,6 @@ def main():
     log("PARSE GERMAN ODENET - BUILD PWN SYNSET MAP")
     log("=" * 70)
 
-    # Print git HEAD for traceability
     git_head = os.popen('git rev-parse HEAD 2>/dev/null').read().strip()
     if git_head:
         log(f"Git HEAD: {git_head}")
@@ -373,23 +52,260 @@ def main():
     log(f"Start: {start_time.isoformat()}")
     log("")
 
-    # Step 1: Explore OdeNet structure
-    odenet, pwn = explore_odenet()
-
-    # Step 2: Build synset map
-    synset_map = build_synset_map(odenet, pwn)
-
-    # Step 3: Write output
-    output_size = write_output(synset_map)
-
-    # Generate report
-    generate_report(synset_map, output_size)
-
-    end_time = datetime.now()
-    duration = end_time - start_time
+    # Step 1: Import and explore wn
+    log("=" * 70)
+    log("STEP 1: LOAD WN PACKAGE")
+    log("=" * 70)
     log("")
-    log(f"Duration: {duration}")
-    log(f"End: {end_time.isoformat()}")
+
+    try:
+        import wn
+        log(f"wn version: {getattr(wn, '__version__', 'unknown')}")
+    except ImportError as e:
+        log(f"FATAL: Cannot import wn: {e}")
+        sys.exit(1)
+
+    # List available lexicons
+    log("")
+    log("Available lexicons:")
+    try:
+        for lex in wn.lexicons():
+            lex_id = safe_attr(lex, 'id')
+            lex_lang = safe_attr(lex, 'language')
+            log(f"  {lex_id} ({lex_lang})")
+    except Exception as e:
+        log(f"ERROR listing lexicons: {type(e).__name__}: {e}")
+
+    # Load OdeNet
+    log("")
+    log("Loading OdeNet...")
+    odenet = None
+    try:
+        odenet = wn.Wordnet('odenet')
+        log("  Loaded successfully")
+    except Exception as e:
+        log(f"  Not found: {e}")
+        log("  Trying to download odenet:1.4...")
+        try:
+            wn.download('odenet:1.4', progress=False)
+            odenet = wn.Wordnet('odenet')
+            log("  Downloaded and loaded")
+        except Exception as e2:
+            log(f"FATAL: Cannot load OdeNet: {e2}")
+            sys.exit(1)
+
+    # Load English WordNet for ILI mapping
+    log("")
+    log("Loading English WordNet for ILI mapping...")
+    pwn = None
+    for name in ['oewn', 'ewn', 'omw-en31']:
+        try:
+            pwn = wn.Wordnet(name)
+            log(f"  Loaded: {name}")
+            break
+        except Exception:
+            pass
+
+    if pwn is None:
+        log("  Not found, downloading oewn:2024...")
+        try:
+            wn.download('oewn:2024', progress=False)
+            pwn = wn.Wordnet('oewn')
+            log("  Downloaded oewn:2024")
+        except Exception as e:
+            log(f"  WARNING: No English WordNet available: {e}")
+
+    # Step 2: Build ILI to PWN offset cache
+    log("")
+    log("=" * 70)
+    log("STEP 2: BUILD ILI TO PWN OFFSET CACHE")
+    log("=" * 70)
+    log("")
+
+    ili_to_pwn = {}
+    if pwn:
+        log("Building ILI cache from English WordNet...")
+        cache_start = datetime.now()
+        pwn_synsets = list(pwn.synsets())
+        log(f"  PWN synsets to process: {len(pwn_synsets):,}")
+
+        for ss in pwn_synsets:
+            try:
+                ili = safe_attr(ss, 'ili')
+                if ili:
+                    ili_str = str(ili)
+                    ss_id = safe_attr(ss, 'id')
+                    if ss_id:
+                        # Extract offset-pos from synset ID like "oewn-00001740-n"
+                        match = re.search(r'(\d{8})-([nvasr])', str(ss_id))
+                        if match:
+                            pwn_id = f"{match.group(1)}-{match.group(2)}"
+                            ili_to_pwn[ili_str] = pwn_id
+            except Exception:
+                pass
+
+        log(f"  ILI cache built: {len(ili_to_pwn):,} entries")
+        log(f"  Cache time: {datetime.now() - cache_start}")
+    else:
+        log("No PWN available - will try direct ILI parsing")
+
+    # Step 3: Process OdeNet synsets
+    log("")
+    log("=" * 70)
+    log("STEP 3: PROCESS ODENET SYNSETS")
+    log("=" * 70)
+    log("")
+
+    synset_map = {}
+    total = 0
+    mapped = 0
+    no_ili = 0
+    no_pwn = 0
+
+    log("Processing OdeNet synsets...")
+    proc_start = datetime.now()
+
+    odenet_synsets = list(odenet.synsets())
+    log(f"Total OdeNet synsets: {len(odenet_synsets):,}")
+    log("")
+
+    # Show sample synset structure
+    if odenet_synsets:
+        ss = odenet_synsets[0]
+        log("Sample synset structure:")
+        log(f"  id: {safe_attr(ss, 'id')}")
+        log(f"  pos: {safe_attr(ss, 'pos')}")
+        log(f"  ili: {safe_attr(ss, 'ili')}")
+        words = safe_attr(ss, 'words')
+        if words:
+            log(f"  words: {len(list(words))} items")
+            for w in list(words)[:2]:
+                log(f"    word.lemma: {safe_attr(w, 'lemma')}")
+                log(f"    word.form: {safe_attr(w, 'form')}")
+        log("")
+
+    for ss in odenet_synsets:
+        total += 1
+
+        # Get German words
+        words = safe_attr(ss, 'words')
+        if not words:
+            continue
+
+        german_words = []
+        for w in words:
+            # Try different attribute names for the word form
+            form = safe_attr(w, 'lemma') or safe_attr(w, 'form') or safe_attr(w, 'word')
+            if form:
+                german_words.append(str(form))
+
+        if not german_words:
+            continue
+
+        # Get ILI and map to PWN
+        ili = safe_attr(ss, 'ili')
+        if not ili:
+            no_ili += 1
+            continue
+
+        ili_str = str(ili)
+        pwn_id = ili_to_pwn.get(ili_str)
+
+        # If not in cache, try direct pattern matching on ILI string
+        if not pwn_id:
+            match = re.search(r'(\d{8})-([nvasr])', ili_str)
+            if match:
+                pwn_id = f"{match.group(1)}-{match.group(2)}"
+
+        if not pwn_id:
+            no_pwn += 1
+            continue
+
+        # Add to map
+        if pwn_id in synset_map:
+            for word in german_words:
+                if word not in synset_map[pwn_id]:
+                    synset_map[pwn_id].append(word)
+        else:
+            synset_map[pwn_id] = german_words.copy()
+
+        mapped += 1
+
+        if total % 10000 == 0:
+            log(f"  Processed {total:,}, mapped {mapped:,}")
+
+    log("")
+    log(f"Total synsets: {total:,}")
+    log(f"Mapped to PWN: {mapped:,}")
+    log(f"No ILI: {no_ili:,}")
+    log(f"No PWN mapping: {no_pwn:,}")
+    log(f"Unique PWN synsets: {len(synset_map):,}")
+    log(f"Process time: {datetime.now() - proc_start}")
+
+    # Step 4: Write output
+    log("")
+    log("=" * 70)
+    log("STEP 4: WRITE OUTPUT")
+    log("=" * 70)
+    log("")
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT_FILE, 'wb') as f:
+        pickle.dump(synset_map, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    output_size = OUTPUT_FILE.stat().st_size
+    log(f"Written: {OUTPUT_FILE}")
+    log(f"Size: {output_size:,} bytes ({output_size/1024:.1f} KB)")
+
+    # Step 5: Report
+    log("")
+    log("=" * 70)
+    log("REPORT")
+    log("=" * 70)
+    log("")
+
+    log(f"Synsets mapped: {len(synset_map):,}")
+    total_words = sum(len(v) for v in synset_map.values())
+    log(f"Total German words: {total_words:,}")
+    if synset_map:
+        log(f"Avg words/synset: {total_words/len(synset_map):.2f}")
+
+    log("")
+    log("5 sample entries:")
+    for sid, words in list(synset_map.items())[:5]:
+        preview = ', '.join(words[:3])
+        if len(words) > 3:
+            preview += f"... (+{len(words)-3})"
+        log(f"  {sid}: [{preview}]")
+
+    # Check overlap with concept_wordnet_map.pkl
+    log("")
+    log("Checking overlap with concept_wordnet_map.pkl...")
+    if CONCEPT_MAP_FILE.exists():
+        try:
+            with open(CONCEPT_MAP_FILE, 'rb') as f:
+                concept_map = pickle.load(f)
+
+            concept_synsets = set()
+            for k in concept_map.keys():
+                match = re.search(r'(\d{8})-([nvasr])', str(k))
+                if match:
+                    concept_synsets.add(f"{match.group(1)}-{match.group(2)}")
+
+            overlap = concept_synsets & set(synset_map.keys())
+            log(f"concept_map synsets: {len(concept_synsets):,}")
+            log(f"OdeNet synsets: {len(synset_map):,}")
+            log(f"Overlap: {len(overlap):,}")
+            if concept_synsets:
+                log(f"Coverage: {100*len(overlap)/len(concept_synsets):.1f}%")
+        except Exception as e:
+            log(f"ERROR: {type(e).__name__}: {e}")
+    else:
+        log(f"Not found: {CONCEPT_MAP_FILE}")
+
+    log("")
+    log(f"Duration: {datetime.now() - start_time}")
+    log(f"End: {datetime.now().isoformat()}")
 
 
 if __name__ == "__main__":

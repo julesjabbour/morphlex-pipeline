@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """Parse Turkish KeNet XML files and build PWN synset-to-Turkish word mapping.
 
-KeNet is the Turkish WordNet from Starlang Software.
-Source: https://github.com/StarlangSoftware/TurkishWordNet
-
-Expected location: /mnt/pgdata/morphlex/data/open_wordnets/kenet/
-The XML files contain synset IDs linked to PWN and Turkish lemmas.
+REWRITTEN to explore actual XML structure first, then parse.
 
 Output: data/open_wordnets/kenet_synset_map.pkl
 Format: {synset_offset_pos: [turkish_word1, turkish_word2, ...], ...}
-Example: {"00001740-n": ["varlık", "nesne"], ...}
 
 Zero error suppression. All exceptions logged visibly.
 """
@@ -22,7 +17,6 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-# Paths
 DATA_DIR = Path("/mnt/pgdata/morphlex/data/open_wordnets/kenet")
 OUTPUT_DIR = Path("/mnt/pgdata/morphlex/data/open_wordnets")
 OUTPUT_FILE = OUTPUT_DIR / "kenet_synset_map.pkl"
@@ -30,262 +24,195 @@ CONCEPT_MAP_FILE = Path("/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl")
 
 
 def log(msg):
-    """Print with immediate flush."""
     print(msg, flush=True)
 
 
-def explore_kenet():
-    """Explore KeNet directory structure and XML format."""
-    log("=" * 70)
-    log("STEP 1: EXPLORE KENET STRUCTURE")
-    log("=" * 70)
-    log("")
-
-    if not DATA_DIR.exists():
-        log(f"FATAL: KeNet directory not found: {DATA_DIR}")
-        sys.exit(1)
-
-    log(f"KeNet directory: {DATA_DIR}")
-    log("")
-
-    # List all files
-    log("Directory contents:")
-    all_files = []
-    for item in sorted(DATA_DIR.rglob('*')):
-        if item.is_file():
-            size = item.stat().st_size
-            rel_path = item.relative_to(DATA_DIR)
-            log(f"  {rel_path} ({size:,} bytes)")
-            all_files.append(item)
-    log("")
-
-    # Find XML files
-    xml_files = list(DATA_DIR.rglob('*.xml'))
-    log(f"Total XML files: {len(xml_files)}")
-    log("")
-
-    if not xml_files:
-        log("WARNING: No XML files found, looking for alternative data files...")
-        # Look for other file types
-        for ext in ['*.json', '*.txt', '*.tsv', '*.csv']:
-            alt_files = list(DATA_DIR.rglob(ext))
-            if alt_files:
-                log(f"Found {len(alt_files)} {ext} files")
-                xml_files = alt_files
-                break
-
-    if not xml_files:
-        log("FATAL: No parseable data files found in KeNet directory")
-        sys.exit(1)
-
-    # Inspect first XML file
-    log("Inspecting first XML file structure:")
-    sample_file = xml_files[0]
-    log(f"File: {sample_file}")
-    log("")
-
-    try:
-        # Print first 50 lines of the file
-        log("First 50 lines:")
-        with open(sample_file, 'r', encoding='utf-8') as f:
-            for i, line in enumerate(f):
-                if i >= 50:
-                    break
-                log(f"  {i + 1}: {line.rstrip()}")
-        log("")
-
-        # Parse and show structure
-        log("XML structure analysis:")
-        tree = ET.parse(sample_file)
-        root = tree.getroot()
-        log(f"  Root tag: {root.tag}")
-        log(f"  Root attributes: {dict(root.attrib)}")
-        log(f"  Direct children: {[child.tag for child in root][:10]}")
-        log("")
-
-        # Show first few synset entries
-        log("First 3 synset-like entries:")
-        count = 0
-        for elem in root.iter():
-            if 'synset' in elem.tag.lower() or 'sense' in elem.tag.lower() or 'literal' in elem.tag.lower():
-                if count < 3:
-                    log(f"  Tag: {elem.tag}")
-                    log(f"    Attributes: {dict(elem.attrib)}")
-                    log(f"    Text: {elem.text[:100] if elem.text else None}")
-                    log(f"    Children: {[(c.tag, c.text[:50] if c.text else None) for c in elem][:5]}")
-                    log("")
-                count += 1
-
-        # Look for PWN-related attributes/elements
-        log("Searching for PWN-related content:")
-        pwn_patterns = ['pwn', 'wn30', 'wn31', 'ili', 'offset', 'pos']
-        found_pwn = False
-        for elem in root.iter():
-            for key, val in elem.attrib.items():
-                for pattern in pwn_patterns:
-                    if pattern in key.lower() or pattern in str(val).lower():
-                        log(f"  Found in {elem.tag}.{key}: {val}")
-                        found_pwn = True
-                        break
-            if elem.text:
-                for pattern in pwn_patterns:
-                    if pattern in elem.text.lower()[:100]:
-                        log(f"  Found in {elem.tag} text: {elem.text[:100]}")
-                        found_pwn = True
-                        break
-
-        if not found_pwn:
-            log("  No explicit PWN references found - will examine synset IDs")
-
-    except ET.ParseError as e:
-        log(f"ERROR: XML parse error: {e}")
-        log("Trying to read as plain text...")
-    except Exception as e:
-        log(f"ERROR inspecting file: {type(e).__name__}: {e}")
-
-    return xml_files
-
-
-def parse_synset_id(synset_id):
-    """Parse KeNet synset ID to extract PWN offset+pos.
-
-    KeNet synset IDs may be in formats like:
-    - "TUR10-0000001-n" (Turkish synset with PWN-like structure)
-    - "ENG30-00001740-n" (direct PWN reference)
-    - "00001740-n" (plain PWN format)
-    """
-    if not synset_id:
+def parse_pwn_id(synset_str):
+    """Extract PWN offset+pos from various synset ID formats."""
+    if not synset_str:
         return None
+    s = str(synset_str)
 
-    synset_str = str(synset_id)
+    # ENG30-00001740-n or eng-30-00001740-n
+    m = re.search(r'ENG[-_]?30[-_](\d{8})[-_]([nvasr])', s, re.I)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
 
-    # Try to extract 8-digit offset + POS
-    # Pattern: ENG30-00001740-n or similar
-    match = re.search(r'ENG\d+-(\d{8})-([nvasr])', synset_str, re.IGNORECASE)
-    if match:
-        return f"{match.group(1)}-{match.group(2)}"
+    # Plain 8-digit-pos
+    m = re.search(r'(\d{8})[-_]([nvasr])', s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
 
-    # Pattern: plain 8-digit offset with POS
-    match = re.search(r'(\d{8})-([nvasr])', synset_str)
-    if match:
-        return f"{match.group(1)}-{match.group(2)}"
-
-    # Pattern: variable-length ID with POS (pad to 8 digits)
-    match = re.search(r'[A-Z]{3}\d*-(\d+)-([nvasr])', synset_str, re.IGNORECASE)
-    if match:
-        offset = match.group(1).zfill(8)
-        return f"{offset}-{match.group(2)}"
+    # TUR10-0001234-n (Turkish synset with PWN-style ID)
+    m = re.search(r'TUR\d+-(\d+)-([nvasr])', s, re.I)
+    if m:
+        offset = m.group(1).zfill(8)
+        return f"{offset}-{m.group(2)}"
 
     return None
 
 
-def build_synset_map(xml_files):
-    """Build PWN synset ID to Turkish words mapping from XML files."""
+def main():
+    log("=" * 70)
+    log("PARSE TURKISH KENET - BUILD PWN SYNSET MAP")
+    log("=" * 70)
+
+    git_head = os.popen('git rev-parse HEAD 2>/dev/null').read().strip()
+    if git_head:
+        log(f"Git HEAD: {git_head}")
+
+    start_time = datetime.now()
+    log(f"Start: {start_time.isoformat()}")
+    log("")
+
+    # Step 1: Explore directory
+    log("=" * 70)
+    log("STEP 1: EXPLORE KENET DIRECTORY")
+    log("=" * 70)
+    log("")
+
+    if not DATA_DIR.exists():
+        log(f"FATAL: Directory not found: {DATA_DIR}")
+        sys.exit(1)
+
+    log(f"Directory: {DATA_DIR}")
+    log("")
+
+    # Find all files
+    all_files = list(DATA_DIR.rglob('*'))
+    files = [f for f in all_files if f.is_file()]
+    log(f"Total files: {len(files)}")
+
+    xml_files = [f for f in files if f.suffix.lower() == '.xml']
+    log(f"XML files: {len(xml_files)}")
+
+    if not xml_files:
+        log("FATAL: No XML files found")
+        # Try other formats
+        for ext in ['*.json', '*.tsv', '*.csv', '*.txt']:
+            found = list(DATA_DIR.rglob(ext))
+            if found:
+                log(f"  Found {len(found)} {ext} files instead")
+        sys.exit(1)
+
+    # Show first few files
+    log("")
+    log("XML files found:")
+    for f in xml_files[:10]:
+        log(f"  {f.relative_to(DATA_DIR)} ({f.stat().st_size:,} bytes)")
+
+    # Step 2: Explore XML structure
     log("")
     log("=" * 70)
-    log("STEP 2: BUILD SYNSET MAP")
+    log("STEP 2: EXPLORE XML STRUCTURE")
+    log("=" * 70)
+    log("")
+
+    sample_xml = xml_files[0]
+    log(f"Analyzing: {sample_xml.name}")
+    log("")
+
+    # Print first 20 lines
+    log("First 20 lines:")
+    with open(sample_xml, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f):
+            if i >= 20:
+                break
+            log(f"  {line.rstrip()[:100]}")
+    log("")
+
+    # Parse and explore structure
+    tree = ET.parse(sample_xml)
+    root = tree.getroot()
+    log(f"Root tag: {root.tag}")
+    log(f"Root attrs: {dict(root.attrib)}")
+
+    # Find all unique tags
+    all_tags = set()
+    for elem in root.iter():
+        all_tags.add(elem.tag)
+    log(f"All tags: {sorted(all_tags)}")
+    log("")
+
+    # Look for synset-related elements
+    synset_patterns = ['SYNSET', 'Synset', 'synset', 'LexicalEntry', 'Sense']
+    found_pattern = None
+    sample_elem = None
+
+    for pattern in synset_patterns:
+        elems = root.findall(f'.//{pattern}')
+        if elems:
+            log(f"Found {len(elems)} <{pattern}> elements")
+            found_pattern = pattern
+            sample_elem = elems[0]
+            break
+
+    if sample_elem is not None:
+        log(f"")
+        log(f"Sample <{found_pattern}> element:")
+        log(f"  Attributes: {dict(sample_elem.attrib)}")
+        log(f"  Children:")
+        for child in sample_elem:
+            text = child.text[:50] if child.text else None
+            log(f"    <{child.tag}>: {text}")
+
+    # Step 3: Parse all XML files
+    log("")
+    log("=" * 70)
+    log("STEP 3: PARSE ALL XML FILES")
     log("=" * 70)
     log("")
 
     synset_map = {}
     total_synsets = 0
-    mapped_synsets = 0
-    skipped_synsets = 0
+    mapped = 0
+    skipped = 0
     parse_errors = 0
 
-    start_time = datetime.now()
-
-    for file_idx, xml_file in enumerate(xml_files):
-        log(f"Processing {file_idx + 1}/{len(xml_files)}: {xml_file.name}")
+    for xml_file in xml_files:
+        log(f"Processing: {xml_file.name}")
 
         try:
             tree = ET.parse(xml_file)
             root = tree.getroot()
 
-            # Strategy: Look for various XML structures used by Turkish WordNets
-            # Common structures:
-            # 1. <SYNSET><ID>...</ID><LITERAL>word</LITERAL></SYNSET>
-            # 2. <synset id="..." ili="..."><lemma>...</lemma></synset>
-            # 3. <LexicalEntry><Lemma writtenForm="..."/><Sense synset="..."/></LexicalEntry>
-
-            # Try different parsing strategies based on XML structure
-
-            # Strategy 1: SYNSET/ID/LITERAL structure
-            for synset_elem in root.iter('SYNSET'):
+            # Strategy 1: <SYNSET> with <ID> and <LITERAL> children
+            for synset in root.findall('.//SYNSET'):
                 total_synsets += 1
-
-                synset_id = None
-                turkish_words = []
 
                 # Get synset ID
-                id_elem = synset_elem.find('ID')
-                if id_elem is not None and id_elem.text:
-                    synset_id = id_elem.text.strip()
+                id_elem = synset.find('ID')
+                synset_id = id_elem.text.strip() if id_elem is not None and id_elem.text else None
 
-                # Also check for ILI attribute
-                ili = synset_elem.get('ili') or synset_elem.get('ILI')
-                if ili and not synset_id:
-                    synset_id = ili
+                # Get words from LITERAL or SYNONYM
+                words = []
+                for lit in synset.findall('.//LITERAL'):
+                    if lit.text:
+                        words.append(lit.text.strip())
+                for syn in synset.findall('.//SYNONYM'):
+                    # SYNONYM may have LITERAL children
+                    for lit in syn.findall('.//LITERAL'):
+                        if lit.text:
+                            words.append(lit.text.strip())
+                    # Or direct text
+                    if syn.text:
+                        words.append(syn.text.strip())
 
-                # Get Turkish words from LITERAL elements
-                for literal in synset_elem.findall('.//LITERAL'):
-                    if literal.text:
-                        word = literal.text.strip()
-                        if word and word not in turkish_words:
-                            turkish_words.append(word)
-
-                # Also check SYNONYM elements
-                for synonym in synset_elem.findall('.//SYNONYM'):
-                    if synonym.text:
-                        word = synonym.text.strip()
-                        if word and word not in turkish_words:
-                            turkish_words.append(word)
-
-                if synset_id and turkish_words:
-                    pwn_id = parse_synset_id(synset_id)
+                if synset_id and words:
+                    pwn_id = parse_pwn_id(synset_id)
                     if pwn_id:
                         if pwn_id in synset_map:
-                            for word in turkish_words:
-                                if word not in synset_map[pwn_id]:
-                                    synset_map[pwn_id].append(word)
+                            for w in words:
+                                if w and w not in synset_map[pwn_id]:
+                                    synset_map[pwn_id].append(w)
                         else:
-                            synset_map[pwn_id] = turkish_words
-                        mapped_synsets += 1
+                            synset_map[pwn_id] = [w for w in words if w]
+                        mapped += 1
                     else:
-                        skipped_synsets += 1
+                        skipped += 1
 
-            # Strategy 2: synset with ili attribute (lowercase tags)
-            for synset_elem in root.iter('synset'):
-                if synset_elem.tag == 'SYNSET':
-                    continue  # Already processed above
-
-                total_synsets += 1
-
-                synset_id = synset_elem.get('id') or synset_elem.get('ili')
-                turkish_words = []
-
-                for lemma in synset_elem.findall('.//lemma'):
-                    word = lemma.text or lemma.get('writtenForm') or lemma.get('form')
-                    if word:
-                        word = word.strip()
-                        if word and word not in turkish_words:
-                            turkish_words.append(word)
-
-                if synset_id and turkish_words:
-                    pwn_id = parse_synset_id(synset_id)
-                    if pwn_id:
-                        if pwn_id in synset_map:
-                            for word in turkish_words:
-                                if word not in synset_map[pwn_id]:
-                                    synset_map[pwn_id].append(word)
-                        else:
-                            synset_map[pwn_id] = turkish_words
-                        mapped_synsets += 1
-                    else:
-                        skipped_synsets += 1
-
-            # Strategy 3: LexicalEntry structure (GWA/LMF format)
-            for entry in root.iter('LexicalEntry'):
+            # Strategy 2: GWA/LMF format - <LexicalEntry> with <Lemma> and <Sense>
+            for entry in root.findall('.//LexicalEntry'):
                 lemma_elem = entry.find('.//Lemma')
                 if lemma_elem is None:
                     continue
@@ -297,174 +224,125 @@ def build_synset_map(xml_files):
 
                 for sense in entry.findall('.//Sense'):
                     total_synsets += 1
-                    synset_id = sense.get('synset') or sense.get('ili')
+                    synset_id = sense.get('synset') or sense.get('ili') or sense.get('id')
 
                     if synset_id:
-                        pwn_id = parse_synset_id(synset_id)
+                        pwn_id = parse_pwn_id(synset_id)
                         if pwn_id:
                             if pwn_id in synset_map:
                                 if word not in synset_map[pwn_id]:
                                     synset_map[pwn_id].append(word)
                             else:
                                 synset_map[pwn_id] = [word]
-                            mapped_synsets += 1
+                            mapped += 1
                         else:
-                            skipped_synsets += 1
+                            skipped += 1
+
+            # Strategy 3: lowercase <synset> with attributes
+            for synset in root.findall('.//synset'):
+                if synset.tag == 'SYNSET':
+                    continue
+                total_synsets += 1
+
+                synset_id = synset.get('id') or synset.get('ili')
+                words = []
+
+                for lemma in synset.findall('.//lemma'):
+                    w = lemma.get('writtenForm') or lemma.text
+                    if w:
+                        words.append(w.strip())
+
+                if synset_id and words:
+                    pwn_id = parse_pwn_id(synset_id)
+                    if pwn_id:
+                        if pwn_id in synset_map:
+                            for w in words:
+                                if w not in synset_map[pwn_id]:
+                                    synset_map[pwn_id].append(w)
+                        else:
+                            synset_map[pwn_id] = words
+                        mapped += 1
+                    else:
+                        skipped += 1
 
         except ET.ParseError as e:
-            log(f"  ERROR: XML parse error: {e}")
+            log(f"  XML parse error: {e}")
             parse_errors += 1
         except Exception as e:
             log(f"  ERROR: {type(e).__name__}: {e}")
             parse_errors += 1
 
-        # Progress
-        if (file_idx + 1) % 10 == 0:
-            elapsed = datetime.now() - start_time
-            log(f"  Progress: {len(synset_map):,} synsets mapped, elapsed: {elapsed}")
-
     log("")
-    log(f"Total synsets encountered: {total_synsets:,}")
-    log(f"Synsets mapped to PWN: {mapped_synsets:,}")
-    log(f"Synsets skipped (no PWN ID): {skipped_synsets:,}")
-    log(f"Files with parse errors: {parse_errors}")
+    log(f"Total synsets found: {total_synsets:,}")
+    log(f"Mapped to PWN: {mapped:,}")
+    log(f"Skipped (no PWN ID): {skipped:,}")
+    log(f"Parse errors: {parse_errors}")
     log(f"Unique PWN synsets: {len(synset_map):,}")
 
-    return synset_map
-
-
-def write_output(synset_map):
-    """Write pickle file."""
+    # Step 4: Write output
     log("")
     log("=" * 70)
-    log("STEP 3: WRITE OUTPUT")
+    log("STEP 4: WRITE OUTPUT")
     log("=" * 70)
     log("")
 
-    # Ensure output directory exists
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT_FILE, 'wb') as f:
+        pickle.dump(synset_map, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    log(f"Writing {len(synset_map):,} synset mappings to {OUTPUT_FILE}...")
+    output_size = OUTPUT_FILE.stat().st_size
+    log(f"Written: {OUTPUT_FILE}")
+    log(f"Size: {output_size:,} bytes ({output_size/1024:.1f} KB)")
 
-    try:
-        with open(OUTPUT_FILE, 'wb') as f:
-            pickle.dump(synset_map, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-        output_size = OUTPUT_FILE.stat().st_size
-        log(f"Output file written: {OUTPUT_FILE}")
-        log(f"Output size: {output_size:,} bytes ({output_size / 1024:.1f} KB)")
-        return output_size
-
-    except OSError as e:
-        log(f"FATAL: Cannot write output file: {e}")
-        raise
-
-
-def generate_report(synset_map, output_size):
-    """Generate final report."""
+    # Step 5: Report
     log("")
     log("=" * 70)
     log("REPORT")
     log("=" * 70)
     log("")
 
-    # Total synsets mapped
-    total_synsets = len(synset_map)
-    log(f"Total synsets mapped: {total_synsets:,}")
-
-    # Total words covered
+    log(f"Synsets mapped: {len(synset_map):,}")
     total_words = sum(len(v) for v in synset_map.values())
     log(f"Total Turkish words: {total_words:,}")
+    if synset_map:
+        log(f"Avg words/synset: {total_words/len(synset_map):.2f}")
 
-    # Average words per synset
-    if total_synsets > 0:
-        avg_words = total_words / total_synsets
-        log(f"Average words per synset: {avg_words:.2f}")
-
-    # 5 sample entries
     log("")
     log("5 sample entries:")
-    sample_items = list(synset_map.items())[:5]
-    for synset_id, words in sample_items:
-        words_preview = ', '.join(words[:5])
-        if len(words) > 5:
-            words_preview += f" ... (+{len(words) - 5} more)"
-        log(f"  {synset_id}: [{words_preview}]")
+    for sid, words in list(synset_map.items())[:5]:
+        preview = ', '.join(words[:3])
+        if len(words) > 3:
+            preview += f"... (+{len(words)-3})"
+        log(f"  {sid}: [{preview}]")
 
-    # File size
-    log("")
-    log(f"Output file size: {output_size:,} bytes ({output_size / 1024:.1f} KB)")
-
-    # Overlap with concept_wordnet_map.pkl
+    # Check overlap
     log("")
     log("Checking overlap with concept_wordnet_map.pkl...")
-
     if CONCEPT_MAP_FILE.exists():
         try:
             with open(CONCEPT_MAP_FILE, 'rb') as f:
                 concept_map = pickle.load(f)
 
             concept_synsets = set()
-            for synset_id in concept_map.keys():
-                match = re.search(r'(\d{8})-([nvasr])', str(synset_id))
-                if match:
-                    norm_id = f"{match.group(1)}-{match.group(2)}"
-                    concept_synsets.add(norm_id)
+            for k in concept_map.keys():
+                m = re.search(r'(\d{8})-([nvasr])', str(k))
+                if m:
+                    concept_synsets.add(f"{m.group(1)}-{m.group(2)}")
 
-            kenet_synsets = set(synset_map.keys())
-            overlap = concept_synsets & kenet_synsets
-
-            log(f"concept_wordnet_map.pkl synsets: {len(concept_synsets):,}")
-            log(f"KeNet synsets: {len(kenet_synsets):,}")
-            log(f"Overlap count: {len(overlap):,}")
-
+            overlap = concept_synsets & set(synset_map.keys())
+            log(f"concept_map synsets: {len(concept_synsets):,}")
+            log(f"KeNet synsets: {len(synset_map):,}")
+            log(f"Overlap: {len(overlap):,}")
             if concept_synsets:
-                overlap_pct = 100.0 * len(overlap) / len(concept_synsets)
-                log(f"Overlap percentage: {overlap_pct:.1f}% of concept_map synsets have KeNet coverage")
-
+                log(f"Coverage: {100*len(overlap)/len(concept_synsets):.1f}%")
         except Exception as e:
-            log(f"ERROR loading concept_wordnet_map.pkl: {type(e).__name__}: {e}")
+            log(f"ERROR: {type(e).__name__}: {e}")
     else:
-        log(f"concept_wordnet_map.pkl not found at {CONCEPT_MAP_FILE}")
+        log(f"Not found: {CONCEPT_MAP_FILE}")
 
-
-def main():
-    log("=" * 70)
-    log("PARSE TURKISH KENET - BUILD PWN SYNSET MAP")
-    log("=" * 70)
-
-    # Print git HEAD for traceability
-    git_head = os.popen('git rev-parse HEAD 2>/dev/null').read().strip()
-    if git_head:
-        log(f"Git HEAD: {git_head}")
-
-    start_time = datetime.now()
-    log(f"Start: {start_time.isoformat()}")
     log("")
-
-    # Step 1: Explore KeNet structure
-    xml_files = explore_kenet()
-
-    # Step 2: Build synset map
-    synset_map = build_synset_map(xml_files)
-
-    if not synset_map:
-        log("")
-        log("WARNING: No synset mappings extracted!")
-        log("The XML structure may be different than expected.")
-        log("Check the exploration output above for clues.")
-
-    # Step 3: Write output
-    output_size = write_output(synset_map)
-
-    # Generate report
-    generate_report(synset_map, output_size)
-
-    end_time = datetime.now()
-    duration = end_time - start_time
-    log("")
-    log(f"Duration: {duration}")
-    log(f"End: {end_time.isoformat()}")
+    log(f"Duration: {datetime.now() - start_time}")
+    log(f"End: {datetime.now().isoformat()}")
 
 
 if __name__ == "__main__":
