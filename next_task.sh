@@ -1,13 +1,14 @@
 #!/bin/bash
-# DOWNLOAD AGWN AND REPLACE MODERN GREEK IN CONCEPT MAP
-# Timestamp: 2026-04-10-agwn-replacement-v1
-# - Download Ancient Greek WordNet data
-# - Build synset-to-Ancient-Greek lookup
-# - Replace Modern Greek (el) words with Ancient Greek words in concept_wordnet_map.pkl
+# DIAGNOSE ANCIENT GREEK WORDNET DATA SOURCES
+# Timestamp: 2026-04-10-agwn-diagnostic-v1
+# - Check downloaded files in data/agwn/
+# - Try Harvard API endpoints
+# - Try wn Python package for Ancient Greek
+# - Try CLARIN-IT with ?sequence=1 parameter
 
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== DOWNLOAD AGWN AND REPLACE MODERN GREEK ==="
+echo "=== DIAGNOSE AGWN DATA SOURCES ==="
 echo "Git HEAD: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
@@ -16,8 +17,8 @@ echo ""
 git fetch origin > /dev/null 2>&1
 git reset --hard origin/main > /dev/null 2>&1
 
-# Run the replacement script
-python3 scripts/replace_modern_greek_with_agwn.py
+# Run the diagnostic script
+python3 scripts/diagnose_agwn.py
 
 RESULT=$?
 
