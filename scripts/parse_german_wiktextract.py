@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Parse German Wiktextract data and build synset map.
 
-Reads kaikki.org-dictionary-German.jsonl.gz, extracts German words with
+Reads kaikki-german.jsonl (uncompressed), extracts German words with
 English glosses from senses, matches glosses to PWN 3.0 synsets via NLTK
-WordNet, bridges to OEWN using pwn30_to_oewn_map.pkl.
+WordNet (following the Sanskrit approach), bridges to OEWN using
+pwn30_to_oewn_map.pkl.
 
 Output: data/open_wordnets/german_wiktextract_synset_map.pkl
 
@@ -34,7 +35,9 @@ def get_lemmatizer():
     return _lemmatizer
 
 DATA_DIR = Path("/mnt/pgdata/morphlex/data/open_wordnets")
-INPUT_FILE = DATA_DIR / "kaikki.org-dictionary-German.jsonl.gz"
+# Task specifies gunzip, so use uncompressed filename
+INPUT_FILE_UNCOMPRESSED = DATA_DIR / "kaikki-german.jsonl"
+INPUT_FILE_COMPRESSED = DATA_DIR / "kaikki-german.jsonl.gz"
 OUTPUT_FILE = DATA_DIR / "german_wiktextract_synset_map.pkl"
 REPORT_FILE = DATA_DIR / "german_wiktextract_report.md"
 PWN30_TO_OEWN_FILE = DATA_DIR / "pwn30_to_oewn_map.pkl"
@@ -121,12 +124,20 @@ def word_set_similarity(words1, words2):
 def lookup_synset(english_gloss, pos_str):
     """Look up the best matching NLTK WordNet synset using gloss matching.
 
+    Follows the Sanskrit approach:
+    1. Extract content words from gloss
+    2. Look up each word in WordNet with correct POS
+    3. If 1 synset -> return it directly
+    4. If multiple -> compare gloss against synset definitions
+    5. If 0 -> try each word individually
+
     Args:
         english_gloss: The English definition/gloss text
         pos_str: POS string
 
     Returns:
-        Best matching synset or None
+        Tuple of (synset, match_type) or None
+        match_type is 'single' or 'gloss'
     """
     wn_pos = wiktextract_pos_to_wn(pos_str)
     if not wn_pos:
@@ -139,9 +150,13 @@ def lookup_synset(english_gloss, pos_str):
     gloss_words = re.findall(r'\b[a-zA-Z]+\b', english_gloss)
 
     # Remove common stopwords to find content words
-    stopwords = {'the', 'and', 'for', 'that', 'this', 'with', 'from', 'have',
-                 'are', 'was', 'were', 'been', 'being', 'used', 'especially',
-                 'something', 'someone', 'thing', 'person', 'very', 'often', 'which'}
+    stopwords = {'the', 'a', 'an', 'and', 'or', 'for', 'of', 'to', 'in', 'on',
+                 'at', 'by', 'that', 'this', 'with', 'from', 'have', 'has',
+                 'are', 'is', 'was', 'were', 'been', 'being', 'used', 'especially',
+                 'something', 'someone', 'thing', 'person', 'very', 'often', 'which',
+                 'who', 'whom', 'whose', 'what', 'where', 'when', 'how', 'why',
+                 'be', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+                 'may', 'might', 'can', 'shall', 'must', 'one', 'two', 'also'}
     content_words = [w.lower() for w in gloss_words if w.lower() not in stopwords and len(w) > 2]
 
     if not content_words:
@@ -163,15 +178,22 @@ def lookup_synset(english_gloss, pos_str):
             unique_synsets.append(s)
 
     if not unique_synsets:
+        # Try each word individually without POS constraint
+        for word in content_words[:3]:
+            synsets = wn.synsets(word)
+            if synsets:
+                # Return first synset that matches general POS
+                for s in synsets:
+                    return (s, 'gloss')
         return None
 
     # If only one synset, return it
     if len(unique_synsets) == 1:
-        return unique_synsets[0]
+        return (unique_synsets[0], 'single')
 
     # Find best match via gloss similarity with lemmatization
     best_synset = None
-    best_score = 0.15  # Lower threshold for better matching
+    best_score = 0.10  # Lower threshold for better matching
 
     for synset in unique_synsets:
         try:
@@ -188,7 +210,7 @@ def lookup_synset(english_gloss, pos_str):
     if best_synset is None and unique_synsets:
         best_synset = min(unique_synsets, key=lambda s: s.offset())
 
-    return best_synset
+    return (best_synset, 'gloss') if best_synset else None
 
 
 def main():
@@ -204,14 +226,27 @@ def main():
     log(f"Start: {start_time.isoformat()}")
     log("")
 
-    # Check input file exists
-    if not INPUT_FILE.exists():
-        log(f"FATAL: Input file not found: {INPUT_FILE}")
-        log("Run: wget -q 'https://kaikki.org/dictionary/German/kaikki.org-dictionary-German.jsonl.gz' -O data/open_wordnets/kaikki.org-dictionary-German.jsonl.gz")
+    # Check input file exists (prefer uncompressed, fall back to compressed)
+    input_file = None
+    is_compressed = False
+    if INPUT_FILE_UNCOMPRESSED.exists():
+        input_file = INPUT_FILE_UNCOMPRESSED
+        is_compressed = False
+    elif INPUT_FILE_COMPRESSED.exists():
+        input_file = INPUT_FILE_COMPRESSED
+        is_compressed = True
+    else:
+        log(f"FATAL: Input file not found.")
+        log(f"  Checked: {INPUT_FILE_UNCOMPRESSED}")
+        log(f"  Checked: {INPUT_FILE_COMPRESSED}")
+        log("")
+        log("Download with:")
+        log("  wget -q 'https://kaikki.org/dictionary/German/kaikki.org-dictionary-German.jsonl.gz' -O /mnt/pgdata/morphlex/data/open_wordnets/kaikki-german.jsonl.gz && gunzip -f /mnt/pgdata/morphlex/data/open_wordnets/kaikki-german.jsonl.gz")
         sys.exit(1)
 
-    log(f"Input file: {INPUT_FILE}")
-    log(f"Size: {INPUT_FILE.stat().st_size:,} bytes ({INPUT_FILE.stat().st_size/1024/1024:.1f} MB)")
+    log(f"Input file: {input_file}")
+    log(f"Compressed: {is_compressed}")
+    log(f"Size: {input_file.stat().st_size:,} bytes ({input_file.stat().st_size/1024/1024:.1f} MB)")
     log("")
 
     # Load PWN 3.0 -> OEWN bridge
@@ -258,13 +293,21 @@ def main():
     total_entries = 0
     entries_with_senses = 0
     entries_with_gloss = 0
-    matched_synsets = 0
+    matched_single = 0
+    matched_gloss = 0
+    unmatched = 0
     bridged_to_oewn = 0
     direct_pwn = 0
 
     pos_counts = defaultdict(int)
 
-    with gzip.open(INPUT_FILE, 'rt', encoding='utf-8') as f:
+    # Open file (compressed or uncompressed)
+    if is_compressed:
+        f = gzip.open(input_file, 'rt', encoding='utf-8')
+    else:
+        f = open(input_file, 'r', encoding='utf-8')
+
+    try:
         for line in f:
             total_entries += 1
 
@@ -306,13 +349,18 @@ def main():
                 if not english_gloss or len(english_gloss) < 5:
                     continue
 
-                # Try to match to WordNet
-                synset = lookup_synset(english_gloss, pos)
+                # Try to match to WordNet (returns synset and match_type)
+                result = lookup_synset(english_gloss, pos)
 
-                if synset is None:
+                if result is None:
+                    unmatched += 1
                     continue
 
-                matched_synsets += 1
+                synset, match_type = result
+                if match_type == 'single':
+                    matched_single += 1
+                else:
+                    matched_gloss += 1
 
                 # Convert to PWN 3.0 ID
                 pwn_id = synset_to_id(synset)
@@ -330,6 +378,8 @@ def main():
                     synset_map[oewn_id] = []
                 if word not in synset_map[oewn_id]:
                     synset_map[oewn_id].append(word)
+    finally:
+        f.close()
 
     log("")
     log("=" * 70)
@@ -337,13 +387,22 @@ def main():
     log("=" * 70)
     log("")
 
+    matched_total = matched_single + matched_gloss
     total_words = sum(len(v) for v in synset_map.values())
     avg_words_per_synset = total_words / len(synset_map) if synset_map else 0
+    match_rate = 100 * matched_total / (matched_total + unmatched) if (matched_total + unmatched) > 0 else 0
 
     log(f"Total entries read: {total_entries:,}")
     log(f"Entries with senses: {entries_with_senses:,}")
     log(f"Entries with glosses: {entries_with_gloss:,}")
-    log(f"Matched synsets: {matched_synsets:,}")
+    log("")
+    log(f"Matching results:")
+    log(f"  Matched via single synset: {matched_single:,}")
+    log(f"  Matched via gloss similarity: {matched_gloss:,}")
+    log(f"  Total matched: {matched_total:,}")
+    log(f"  Unmatched: {unmatched:,}")
+    log(f"  Match rate: {match_rate:.1f}%")
+    log("")
     log(f"Unique OEWN synsets: {len(synset_map):,}")
     log(f"Total German words: {total_words:,}")
     log(f"Words per synset: {avg_words_per_synset:.2f}")
@@ -394,15 +453,19 @@ Git HEAD: {git_head}
 
 ## Input
 
-- File: {INPUT_FILE}
-- Size: {INPUT_FILE.stat().st_size:,} bytes
+- File: {input_file}
+- Size: {input_file.stat().st_size:,} bytes
 
 ## Processing Stats
 
 - Total entries: {total_entries:,}
 - Entries with senses: {entries_with_senses:,}
 - Entries with glosses: {entries_with_gloss:,}
-- Matched synsets: {matched_synsets:,}
+- Matched via single synset: {matched_single:,}
+- Matched via gloss similarity: {matched_gloss:,}
+- Total matched: {matched_total:,}
+- Unmatched: {unmatched:,}
+- Match rate: {match_rate:.1f}%
 
 ## Output
 
