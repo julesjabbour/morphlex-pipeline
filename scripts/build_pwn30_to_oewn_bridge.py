@@ -9,7 +9,7 @@ SOLUTION: Use ILI as the bridge. Both PWN 3.0 and OEWN map to the same ILI codes
 
 Steps:
 1. Download PWN 3.0 via wn package: wn.download('omw-en:1.4')
-2. Load both PWN 3.0 and OEWN lexicons
+2. Load both PWN 3.0 and OEWN as Wordnet objects (NOT Lexicon objects!)
 3. For each PWN 3.0 synset: get ILI -> find OEWN synset with same ILI -> record mapping
 4. Save as data/open_wordnets/pwn30_to_oewn_map.pkl
 
@@ -20,11 +20,11 @@ This bridge is also needed for Latin and Greek - save as shared resource.
 
 Zero error suppression. All exceptions logged visibly.
 
-IMPORTANT: The wn package uses PROPERTIES not METHODS for:
-  - lex.id, lex.label, lex.language (NOT lex.id(), lex.label(), lex.language())
-  - synset.id, synset.pos, synset.ili (NOT synset.id(), synset.pos(), synset.ili())
-  - word.lemma (NOT word.lemma())
-Only .synsets(), .words(), .definition(), .examples(), .senses() use parentheses.
+CRITICAL API NOTES (from wn_api_audit.py):
+- wn.lexicons() returns Lexicon objects (metadata only, NO synsets() method!)
+- wn.Wordnet(name) returns Wordnet objects (HAS synsets() method!)
+- PROPERTIES (no parens): id, label, language, pos, ili, lemma
+- METHODS (with parens): synsets(), words(), definition(), examples(), forms()
 """
 
 import os
@@ -41,6 +41,7 @@ logging.getLogger('wn').setLevel(logging.WARNING)
 OUTPUT_DIR = Path("/mnt/pgdata/morphlex/data/open_wordnets")
 OUTPUT_FILE = OUTPUT_DIR / "pwn30_to_oewn_map.pkl"
 CONCEPT_MAP_FILE = Path("/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl")
+SANSKRIT_MAP_FILE = Path("/mnt/pgdata/morphlex/data/open_wordnets/sanskrit_synset_map.pkl")
 
 
 def log(msg):
@@ -51,7 +52,7 @@ def synset_to_offset_pos(synset):
     """Extract offset-pos ID from a wn Synset object.
 
     E.g., 'oewn-00001740-a' -> '00001740-a'
-    Uses synset.id (property, not method).
+    Uses synset.id (PROPERTY, not method).
     """
     sid = synset.id  # PROPERTY not method
     # Handle formats like 'oewn-00001740-a' or 'omw-en-00001740-a'
@@ -88,103 +89,109 @@ def main():
         log("Install with: pip install wn")
         sys.exit(1)
 
-    # Step 2: Download required wordnets (silently)
+    # Step 2: Download required wordnets
     log("")
     log("=" * 70)
     log("STEP 2: DOWNLOAD REQUIRED WORDNETS")
     log("=" * 70)
     log("")
 
-    # Check what's already downloaded
+    # Check what's already downloaded (Lexicon objects for info only)
     log("Checking installed wordnets...")
     installed = list(wn.lexicons())
     log(f"Currently installed: {len(installed)} lexicons")
     for lex in installed[:10]:
-        log(f"  {lex.id} ({lex.label})")  # PROPERTIES not methods
+        # PROPERTIES not methods
+        log(f"  {lex.id} ({lex.label})")
     if len(installed) > 10:
         log(f"  ... and {len(installed) - 10} more")
     log("")
 
     # Download PWN 3.0 (OMW English WordNet based on PWN 3.0)
-    pwn_id = 'omw-en:1.4'
-    oewn_id = 'ewn:2020'  # Open English WordNet
+    pwn_downloads = ['omw-en:1.4']
+    oewn_downloads = ['oewn:2024', 'ewn:2020']
 
-    log(f"Downloading {pwn_id} (PWN 3.0 based)...")
-    try:
-        wn.download(pwn_id, progress=False)
-        log("  Downloaded successfully")
-    except Exception as e:
-        if "already added" in str(e).lower() or "exists" in str(e).lower():
-            log("  Already installed")
-        else:
-            log(f"  Note: {e}")
+    for wn_id in pwn_downloads:
+        log(f"Ensuring {wn_id} is available...")
+        try:
+            wn.download(wn_id, progress=False)
+            log("  Downloaded")
+        except TypeError:
+            # progress parameter not supported in all versions
+            try:
+                wn.download(wn_id)
+                log("  Downloaded (no progress param)")
+            except Exception as e:
+                log(f"  Note: {e}")
+        except Exception as e:
+            if "already added" in str(e).lower() or "exists" in str(e).lower():
+                log("  Already installed")
+            else:
+                log(f"  Note: {e}")
 
-    log(f"Downloading {oewn_id} (Open English WordNet)...")
-    try:
-        wn.download(oewn_id, progress=False)
-        log("  Downloaded successfully")
-    except Exception as e:
-        if "already added" in str(e).lower() or "exists" in str(e).lower():
-            log("  Already installed")
-        else:
-            log(f"  Note: {e}")
-
-    # Also try oewn:2024 which is newer
-    oewn_new_id = 'oewn:2024'
-    log(f"Downloading {oewn_new_id} (Open English WordNet 2024)...")
-    try:
-        wn.download(oewn_new_id, progress=False)
-        log("  Downloaded successfully")
-    except Exception as e:
-        if "already added" in str(e).lower() or "exists" in str(e).lower():
-            log("  Already installed")
-        else:
-            log(f"  Note: {e}")
+    for wn_id in oewn_downloads:
+        log(f"Ensuring {wn_id} is available...")
+        try:
+            wn.download(wn_id, progress=False)
+            log("  Downloaded")
+        except TypeError:
+            try:
+                wn.download(wn_id)
+                log("  Downloaded (no progress param)")
+            except Exception as e:
+                log(f"  Note: {e}")
+        except Exception as e:
+            if "already added" in str(e).lower() or "exists" in str(e).lower():
+                log("  Already installed")
+            else:
+                log(f"  Note: {e}")
 
     log("")
-    log("Updated installed wordnets:")
-    installed = list(wn.lexicons())
-    for lex in installed:
-        log(f"  {lex.id} ({lex.label})")  # PROPERTIES not methods
-    log("")
 
-    # Step 3: Load lexicons and build ILI maps
+    # Step 3: Load Wordnet objects (NOT Lexicon objects!)
+    # CRITICAL: wn.Wordnet(name) returns a Wordnet with .synsets() method
+    #           wn.lexicons() returns Lexicon objects WITHOUT .synsets() method
     log("=" * 70)
-    log("STEP 3: LOAD LEXICONS AND BUILD ILI MAPS")
+    log("STEP 3: LOAD WORDNET OBJECTS AND BUILD ILI MAPS")
     log("=" * 70)
     log("")
 
-    # Find the PWN 3.0 lexicon
-    pwn_lexicon = None
-    oewn_lexicon = None
+    # Load PWN 3.0 as Wordnet object
+    pwn_wn = None
+    for name in ['omw-en']:
+        try:
+            pwn_wn = wn.Wordnet(name)
+            log(f"Loaded PWN 3.0 as Wordnet: {name}")
+            break
+        except Exception as e:
+            log(f"  Could not load {name}: {e}")
 
-    for lex in installed:
-        lex_id = lex.id  # PROPERTY not method
-        log(f"Examining lexicon: {lex_id}")
-        if 'omw-en' in lex_id:
-            pwn_lexicon = lex
-            log(f"  -> Using as PWN 3.0 source")
-        elif 'oewn' in lex_id or 'ewn' in lex_id:
-            oewn_lexicon = lex
-            log(f"  -> Using as OEWN source")
-
-    if not pwn_lexicon:
-        log("FATAL: Could not find PWN 3.0 (omw-en) lexicon")
+    if not pwn_wn:
+        log("FATAL: Could not load PWN 3.0 (omw-en) as Wordnet object")
         sys.exit(1)
 
-    if not oewn_lexicon:
-        log("FATAL: Could not find OEWN lexicon")
+    # Load OEWN as Wordnet object
+    oewn_wn = None
+    for name in ['oewn', 'ewn']:
+        try:
+            oewn_wn = wn.Wordnet(name)
+            log(f"Loaded OEWN as Wordnet: {name}")
+            break
+        except Exception as e:
+            log(f"  Could not load {name}: {e}")
+
+    if not oewn_wn:
+        log("FATAL: Could not load OEWN as Wordnet object")
         sys.exit(1)
 
-    log("")
-    log(f"PWN 3.0 lexicon: {pwn_lexicon.id}")  # PROPERTY not method
-    log(f"OEWN lexicon: {oewn_lexicon.id}")  # PROPERTY not method
     log("")
 
     # Build ILI -> OEWN offset map
     log("Building ILI -> OEWN offset map...")
     ili_to_oewn = {}
-    oewn_synsets = list(oewn_lexicon.synsets())  # .synsets() IS a method
+
+    # Use Wordnet.synsets() - this is the correct method!
+    oewn_synsets = list(oewn_wn.synsets())
     log(f"  OEWN synsets: {len(oewn_synsets):,}")
 
     for synset in oewn_synsets:
@@ -201,7 +208,9 @@ def main():
 
     # Build PWN 3.0 offset -> ILI map, then compose to get PWN -> OEWN
     log("Building PWN 3.0 offset -> OEWN offset bridge...")
-    pwn_synsets = list(pwn_lexicon.synsets())  # .synsets() IS a method
+
+    # Use Wordnet.synsets() - this is the correct method!
+    pwn_synsets = list(pwn_wn.synsets())
     log(f"  PWN 3.0 synsets: {len(pwn_synsets):,}")
 
     pwn_to_oewn = {}
@@ -263,9 +272,46 @@ def main():
         log(f"WARNING: {CONCEPT_MAP_FILE} not found")
     log("")
 
-    # Step 5: Write output
+    # Step 5: Test Sanskrit remapping
     log("=" * 70)
-    log("STEP 5: WRITE OUTPUT")
+    log("STEP 5: TEST SANSKRIT REMAPPING")
+    log("=" * 70)
+    log("")
+
+    if SANSKRIT_MAP_FILE.exists():
+        log(f"Loading {SANSKRIT_MAP_FILE}...")
+        with open(SANSKRIT_MAP_FILE, 'rb') as f:
+            sanskrit_map = pickle.load(f)
+
+        sanskrit_pwn_ids = set(sanskrit_map.keys())
+        log(f"Sanskrit PWN synsets: {len(sanskrit_pwn_ids):,}")
+
+        # Check direct overlap (before remapping)
+        if CONCEPT_MAP_FILE.exists():
+            direct_overlap = sanskrit_pwn_ids & concept_oewn_ids
+            log(f"Direct overlap (before remap): {len(direct_overlap):,}")
+
+        # Remap Sanskrit IDs through bridge
+        remapped_count = 0
+        remapped_overlap = set()
+        for pwn_id in sanskrit_pwn_ids:
+            if pwn_id in pwn_to_oewn:
+                oewn_id = pwn_to_oewn[pwn_id]
+                remapped_count += 1
+                if CONCEPT_MAP_FILE.exists() and oewn_id in concept_oewn_ids:
+                    remapped_overlap.add(oewn_id)
+
+        log(f"Sanskrit IDs mappable via bridge: {remapped_count:,}")
+        if CONCEPT_MAP_FILE.exists():
+            log(f"Overlap after remapping: {len(remapped_overlap):,}")
+            log(f"Improvement: {len(direct_overlap):,} -> {len(remapped_overlap):,}")
+    else:
+        log(f"WARNING: {SANSKRIT_MAP_FILE} not found (run parse_iwn_sanskrit.py first)")
+    log("")
+
+    # Step 6: Write output
+    log("=" * 70)
+    log("STEP 6: WRITE OUTPUT")
     log("=" * 70)
     log("")
 
@@ -278,7 +324,7 @@ def main():
     log(f"Size: {output_size:,} bytes ({output_size/1024:.1f} KB)")
     log("")
 
-    # Step 6: Report
+    # Step 7: Report
     log("=" * 70)
     log("REPORT")
     log("=" * 70)
