@@ -31,41 +31,47 @@ def log(msg):
     print(msg, flush=True)
 
 
-def pos_to_char(pos_str):
-    """Convert POS string to single character for PWN ID."""
+def pos_to_chars(pos_str):
+    """Convert POS string to possible single characters for PWN ID.
+
+    Returns a list of possible POS chars to try.
+    For adjectives, returns both 'a' and 's' since WordNet distinguishes
+    adjectives (a) from satellite adjectives (s), but IWN just says ADJECTIVE.
+    """
     if not pos_str:
-        return None
+        return []
     pos = pos_str.strip().upper()
     if pos in ['NOUN', 'N']:
-        return 'n'
+        return ['n']
     elif pos in ['VERB', 'V']:
-        return 'v'
+        return ['v']
     elif pos in ['ADJECTIVE', 'ADJ', 'A', 'S']:
-        return 'a'
+        # Try both adjective and satellite adjective
+        return ['a', 's']
     elif pos in ['ADVERB', 'ADV', 'R']:
-        return 'r'
-    return None
+        return ['r']
+    return []
 
 
-def make_pwn_id(english_id, pos_str):
-    """Create PWN ID from raw number and POS.
+def make_pwn_ids(english_id, pos_str):
+    """Create possible PWN IDs from raw number and POS.
 
     english_id: raw number like 975187
     pos_str: POS like 'NOUN' or 'ADJECTIVE'
-    Returns: '00975187-n' format
+    Returns: list of possible IDs like ['00975187-a', '00975187-s'] for adjectives
     """
     if not english_id or not pos_str:
-        return None
+        return []
 
     # Clean and extract numeric ID
     id_str = str(english_id).strip()
     if not id_str:
-        return None
+        return []
 
     # Extract just the digits
     digits = re.sub(r'\D', '', id_str)
     if not digits:
-        return None
+        return []
 
     # Zero-pad to 8 digits
     padded = digits.zfill(8)
@@ -74,12 +80,12 @@ def make_pwn_id(english_id, pos_str):
     if len(padded) > 8:
         padded = padded[-8:]
 
-    # Get POS character
-    pos_char = pos_to_char(pos_str)
-    if not pos_char:
-        return None
+    # Get possible POS characters (may be multiple for adjectives)
+    pos_chars = pos_to_chars(pos_str)
+    if not pos_chars:
+        return []
 
-    return f"{padded}-{pos_char}"
+    return [f"{padded}-{pc}" for pc in pos_chars]
 
 
 def main():
@@ -93,6 +99,43 @@ def main():
 
     start_time = datetime.now()
     log(f"Start: {start_time.isoformat()}")
+    log("")
+
+    # Step 0: Load concept_wordnet_map to get valid synset IDs
+    log("=" * 70)
+    log("STEP 0: LOAD CONCEPT MAP FOR SYNSET ID NORMALIZATION")
+    log("=" * 70)
+    log("")
+
+    concept_synsets = set()
+    if CONCEPT_MAP_FILE.exists():
+        log(f"Loading {CONCEPT_MAP_FILE}...")
+        try:
+            with open(CONCEPT_MAP_FILE, 'rb') as f:
+                concept_map = pickle.load(f)
+            log(f"Loaded {len(concept_map):,} concepts")
+
+            # Extract all synset IDs (both 'a' and 's' adjectives are in concept_map)
+            for k in concept_map.keys():
+                m = re.search(r'(\d{8})-([nvasr])', str(k))
+                if m:
+                    concept_synsets.add(f"{m.group(1)}-{m.group(2)}")
+
+            log(f"Extracted {len(concept_synsets):,} unique synset IDs")
+
+            # Show POS distribution
+            pos_dist = {}
+            for sid in concept_synsets:
+                pos = sid.split('-')[1]
+                pos_dist[pos] = pos_dist.get(pos, 0) + 1
+            log(f"POS distribution in concept_map: {pos_dist}")
+            log("")
+        except Exception as e:
+            log(f"WARNING: Could not load concept_map: {e}")
+            log("Will use default POS mapping (may reduce overlap)")
+    else:
+        log(f"WARNING: {CONCEPT_MAP_FILE} not found")
+        log("Will use default POS mapping (may reduce overlap)")
     log("")
 
     # Step 1: Explore directory
@@ -271,16 +314,29 @@ def main():
                 skipped += 1
                 continue
 
-            # Create PWN ID from raw number + POS
-            pwn_id = make_pwn_id(english_id, pos_str)
+            # Create possible PWN IDs from raw number + POS
+            # For adjectives, this returns both 'a' and 's' variants
+            possible_ids = make_pwn_ids(english_id, pos_str)
 
-            if not pwn_id:
+            if not possible_ids:
                 reason = "invalid_pwn_id"
                 skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
                 skipped += 1
                 if total_rows <= 5:
                     log(f"  SKIP row {total_rows}: english_id={english_id}, pos={pos_str} -> no valid PWN ID")
                 continue
+
+            # Pick the ID that exists in concept_map (for proper POS normalization)
+            # This fixes the a/s adjective mismatch between IWN and OEWN
+            pwn_id = None
+            for pid in possible_ids:
+                if pid in concept_synsets:
+                    pwn_id = pid
+                    break
+
+            # If no match found, use first option (synset may not be in concept_map)
+            if pwn_id is None:
+                pwn_id = possible_ids[0]
 
             # Sanskrit text might have multiple words separated by comma
             words = [w.strip() for w in sanskrit_text.split(',')]
