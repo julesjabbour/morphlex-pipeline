@@ -1,28 +1,46 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex/data/open_wordnets
 
-for lang_url in \
-  "English/kaikki.org-dictionary-English.jsonl.gz kaikki-english.jsonl" \
-  "Hebrew/kaikki.org-dictionary-Hebrew.jsonl.gz kaikki-hebrew.jsonl" \
-  "Sanskrit/kaikki.org-dictionary-Sanskrit.jsonl.gz kaikki-sanskrit.jsonl" \
-  "Turkish/kaikki.org-dictionary-Turkish.jsonl.gz kaikki-turkish.jsonl" \
-  "Latin/kaikki.org-dictionary-Latin.jsonl.gz kaikki-latin.jsonl" \
-  "Ancient%20Greek/kaikki.org-dictionary-Ancient%20Greek.jsonl.gz kaikki-ancient-greek.jsonl" \
-  "Chinese/kaikki.org-dictionary-Chinese.jsonl.gz kaikki-chinese.jsonl" \
-  "Japanese/kaikki.org-dictionary-Japanese.jsonl.gz kaikki-japanese.jsonl"
-do
-  url_part=$(echo "$lang_url" | cut -d' ' -f1)
-  outfile=$(echo "$lang_url" | cut -d' ' -f2)
-  if [ -f "$outfile" ]; then
-    echo "SKIP: $outfile already exists ($(ls -lh $outfile | awk '{print $5}'))"
-  else
-    echo "DOWNLOADING: $outfile..."
-    wget -q "https://kaikki.org/dictionary/$url_part" -O "${outfile}.gz" && gunzip -f "${outfile}.gz" && echo "DONE: $(ls -lh $outfile | awk '{print $5}')" || echo "FAILED: $outfile"
-  fi
-done
+echo "=== PART 1: FIX ANCIENT GREEK DOWNLOAD ==="
+rm -f kaikki-ancient-greek.jsonl.gz
+wget -q "https://kaikki.org/dictionary/Ancient%20Greek/kaikki.org-dictionary-Ancient%20Greek.jsonl.gz" -O kaikki-ancient-greek.jsonl.gz && gunzip -f kaikki-ancient-greek.jsonl.gz && echo "DONE: $(ls -lh kaikki-ancient-greek.jsonl | awk '{print $5}')" || echo "FAILED - trying alternate URL..." && wget -q "https://kaikki.org/dictionary/Ancient Greek/kaikki.org-dictionary-Ancient Greek.jsonl.gz" -O kaikki-ancient-greek.jsonl.gz 2>/dev/null && gunzip -f kaikki-ancient-greek.jsonl.gz && echo "DONE ALT: $(ls -lh kaikki-ancient-greek.jsonl | awk '{print $5}')" || echo "BOTH FAILED"
 
 echo ""
-echo "=== ALL FILES ==="
-ls -lhS /mnt/pgdata/morphlex/data/open_wordnets/kaikki-*.jsonl
-echo ""
-df -h /mnt/pgdata
+echo "=== PART 2: PROBE ENGLISH TRANSLATIONS FIELD ==="
+cd /mnt/pgdata/morphlex
+source venv/bin/activate
+python3 -c "
+import json
+
+words = ['house', 'book', 'water', 'bridge', 'key', 'school', 'freedom', 'work', 'bicycle', 'airplane']
+found = {}
+with open('data/open_wordnets/kaikki-english.jsonl') as f:
+    for line in f:
+        entry = json.loads(line)
+        w = entry.get('word','')
+        if w in words and w not in found and entry.get('lang','') == 'English':
+            trans = entry.get('translations', [])
+            if trans:
+                found[w] = {
+                    'word': w,
+                    'pos': entry.get('pos',''),
+                    'translations_count': len(trans),
+                    'sample_translations': trans[:15]
+                }
+                if len(found) == 10:
+                    break
+
+for w in words:
+    if w in found:
+        e = found[w]
+        print(f'===== {e[\"word\"]} ({e[\"pos\"]}) — {e[\"translations_count\"]} translations =====')
+        for t in e['sample_translations']:
+            lang = t.get('lang','?')
+            tw = t.get('word', t.get('note','?'))
+            sense = t.get('sense','')
+            print(f'  {lang}: {tw}  [{sense[:50]}]')
+        print()
+    else:
+        print(f'===== {w}: NOT FOUND =====')
+        print()
+"
