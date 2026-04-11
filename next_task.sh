@@ -1,10 +1,17 @@
 #!/bin/bash
-cd /mnt/pgdata/morphlex && source venv/bin/activate && python3 -c "
+cd /mnt/pgdata/morphlex && source venv/bin/activate
+
+echo "=== STEP 1: DOWNLOAD ARABIC WIKTEXTRACT ==="
+wget -q https://kaikki.org/dictionary/Arabic/kaikki.org-dictionary-Arabic.jsonl.gz -O /mnt/pgdata/morphlex/data/open_wordnets/kaikki-arabic.jsonl.gz && gunzip -f /mnt/pgdata/morphlex/data/open_wordnets/kaikki-arabic.jsonl.gz && ls -lh /mnt/pgdata/morphlex/data/open_wordnets/kaikki-arabic.jsonl
+
+echo ""
+echo "=== STEP 2: PROBE ETYMOLOGY DATA ==="
+python3 -c "
 import json
 
-words = ['Haus', 'Krankenhaus', 'Freiheit', 'verstehen', 'Handschuh', 'Kindergarten', 'Wissenschaft', 'arbeiten', 'Löffel', 'Fahrrad', 'Schlüssel', 'Erdbeere', 'Fernseher', 'Flugzeug', 'Brücke', 'Schmetterling', 'Tisch', 'Wasserhahn', 'Geburtstag', 'Bäckerei']
+words = ['بيت', 'كتاب', 'علم', 'مدرسة', 'حرية', 'مستشفى', 'طائرة', 'جامعة', 'مفتاح', 'ميلاد', 'فراشة', 'جسر', 'ملعقة', 'دراجة', 'تلفاز', 'فاكهة', 'مخبز', 'عمل', 'فهم', 'طاولة']
 found = {}
-with open('/mnt/pgdata/morphlex/data/open_wordnets/kaikki-german.jsonl') as f:
+with open('/mnt/pgdata/morphlex/data/open_wordnets/kaikki-arabic.jsonl') as f:
     for line in f:
         entry = json.loads(line)
         w = entry.get('word','')
