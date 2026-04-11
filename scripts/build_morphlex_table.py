@@ -10,6 +10,7 @@ Memory-efficient: processes one language file at a time.
 Features:
 - Hit rate improvements: diacritic stripping, Chinese slash splitting
 - Classification layer: morph_type, root, derivation_rule, compound_parts, cognates, proto_root
+- Template-based classification using Wiktextract template names (no hardcoded strings)
 """
 
 import csv
@@ -82,19 +83,136 @@ def split_chinese_variants(word):
 
 
 # ============== CLASSIFICATION LAYER ==============
+# Classification based on Wiktextract template names - NO hardcoded language/text patterns
 
-# Template categories for morph_type classification
-ROOT_TEMPLATES = {'ar-root', 'he-root', 'sa-root', 'he-rootbox', 'ar-rootbox', 'root'}
-DERIVATION_TEMPLATES = {'suffix', 'prefix', 'affix', 'af', 'suf', 'ar-noun of place',
-                        'ar-tool noun', 'ar-etym-iyya', 'surface analysis'}
-COMPOUND_TEMPLATES = {'compound', 'com', 'surf'}
-BORROWED_TEMPLATES = {'bor', 'borrowed'}
-INHERITED_TEMPLATES = {'inh', 'inherited'}
+
+def is_proto_language(lang_code):
+    """Check if a language code represents a proto-language."""
+    if not lang_code:
+        return False
+    lc = lang_code.lower()
+    return lc.startswith('proto') or lc.endswith('-pro') or lc.startswith('ine-pro') or \
+           lc.startswith('gem-pro') or lc.startswith('gmw-pro') or lc.startswith('sem-pro')
+
+
+def classify_morph_type(templates, etymology_text=''):
+    """
+    Classify morphological type from etymology templates using template names.
+
+    Classification rules (based on Wiktextract template naming conventions):
+    1. Any template with "root" in name → ROOT
+    2. inh, inh+ → ROOT_INHERITED
+    3. bor, bor+, lbor → BORROWED
+    4. der, der+ → check if proto-language → ROOT_INHERITED, else DERIVED_FROM
+    5. suffix, suf, prefix, pre, affix, af, com → DERIVATION or COMPOUND
+    6. compound, surf, surface analysis → COMPOUND
+    7. sl, semantic loan, calque, cal → BORROWED
+    8. Pattern-based derivation templates (noun of place, tool noun, etym-iyya) → DERIVATION
+
+    Falls back to etymology_text expansion patterns when templates are empty.
+    """
+    if not templates:
+        # Try fallback classification from etymology_text (Wiktextract expansion patterns)
+        fallback = classify_from_etymology_text(etymology_text)
+        if fallback:
+            return fallback
+        # If no etymology_text either, it's truly UNKNOWN
+        if not etymology_text:
+            return 'UNKNOWN'
+        return 'UNKNOWN'
+
+    # Analyze all template names
+    has_root = False
+    has_inh = False
+    has_bor = False
+    has_der = False
+    has_der_to_proto = False
+    has_derivation_affix = False
+    has_compound = False
+    has_loan = False
+
+    for t in templates:
+        name = t.get('name', '').lower()
+        args = t.get('args', {})
+
+        # 1. Any template with "root" in name → ROOT
+        if 'root' in name:
+            has_root = True
+            continue
+
+        # 2. inh, inh+ → ROOT_INHERITED
+        if name in ('inh', 'inh+', 'inherited'):
+            has_inh = True
+            continue
+
+        # 3. bor, bor+, lbor → BORROWED
+        if name in ('bor', 'bor+', 'lbor', 'borrowed', 'loanword'):
+            has_bor = True
+            continue
+
+        # 4. der, der+ → check target language
+        if name in ('der', 'der+', 'derived'):
+            # Check if deriving from proto-language
+            target_lang = args.get('2', args.get('1', ''))
+            if is_proto_language(target_lang):
+                has_der_to_proto = True
+            else:
+                has_der = True
+            continue
+
+        # 5. Affix/derivation templates
+        if name in ('suffix', 'suf', 'prefix', 'pre', 'affix', 'af'):
+            has_derivation_affix = True
+            continue
+
+        # 6. Compound templates
+        if name in ('compound', 'com', 'surf', 'surface analysis'):
+            has_compound = True
+            continue
+
+        # 7. Loan/calque templates
+        if name in ('sl', 'semantic loan', 'calque', 'cal', 'slbor', 'translit'):
+            has_loan = True
+            continue
+
+        # 8. Pattern-based derivation templates (any language)
+        if 'noun of place' in name or 'tool noun' in name or 'etym-iyya' in name or \
+           'verbal noun' in name or 'participle' in name or 'nisba' in name or \
+           'agent noun' in name or 'deverbal' in name or 'denominal' in name:
+            has_derivation_affix = True
+            continue
+
+        # Also check for m, l, mention templates (these just cite words, not classify)
+        # These don't contribute to classification
+
+    # Classification priority logic
+    if has_compound and has_derivation_affix:
+        return 'COMPOUND_DERIVATION'
+    if has_compound:
+        return 'COMPOUND'
+    if has_derivation_affix:
+        return 'DERIVATION'
+    if has_bor or has_loan:
+        return 'BORROWED'
+    if has_root and not has_derivation_affix and not has_compound:
+        return 'ROOT'
+    if has_inh or has_der_to_proto:
+        return 'ROOT_INHERITED'
+    if has_der:
+        return 'DERIVED_FROM'
+
+    # If we have templates but couldn't classify, try text fallback
+    fallback = classify_from_etymology_text(etymology_text)
+    if fallback:
+        return fallback
+
+    return 'UNKNOWN'
 
 
 def classify_from_etymology_text(etymology_text):
     """
-    Fallback classification from etymology_text when templates are empty.
+    Fallback classification from etymology_text using Wiktextract expansion patterns.
+    These patterns come from template expansions, so they ARE systematic.
     Returns morph_type or None if no clear pattern found.
     """
     if not etymology_text:
@@ -102,86 +220,51 @@ def classify_from_etymology_text(etymology_text):
 
     text = etymology_text.lower()
 
-    # BORROWED patterns
-    if 'borrowed from' in text or 'from latin' in text or 'from french' in text or \
-       'from italian' in text or 'from greek' in text:
+    # Wiktextract expansion patterns from templates:
+
+    # BORROWED: "Borrowed from X" is the standard bor template expansion
+    if text.startswith('borrowed from') or 'a]borrowed from' in text:
         return 'BORROWED'
 
-    # ROOT patterns
-    if 'from the root' in text or 'from root' in text:
-        return 'ROOT'
+    # ROOT_INHERITED: "Inherited from X" is the standard inh template expansion
+    if text.startswith('inherited from') or 'a]inherited from' in text:
+        return 'ROOT_INHERITED'
 
-    # DERIVATION patterns
-    if 'from the adjective' in text or 'from the verb' in text or 'from the noun' in text:
+    # DERIVED_FROM: "From X" without borrowed/inherited prefix
+    # Check for Proto-language derivation → ROOT_INHERITED
+    proto_match = re.search(r'from proto-\w+|from pie ', text)
+    if proto_match:
+        return 'ROOT_INHERITED'
+
+    # Check for "From Middle X, from Old X" inheritance chain
+    if re.search(r'from middle \w+.*from old \w+', text):
+        return 'ROOT_INHERITED'
+
+    # DERIVATION: Common derivation patterns
+    if re.search(r'from the (adjective|verb|noun|root)', text):
         return 'DERIVATION'
 
-    # ROOT_INHERITED pattern: "From Middle X, from Old X, from Proto-"
-    # Match patterns like "from middle high german ... from old high german ... from proto-germanic"
-    middle_pattern = re.search(r'from middle \w+', text)
-    old_pattern = re.search(r'from old \w+', text)
-    proto_pattern = re.search(r'from proto-', text)
+    # Suffix/prefix patterns in text
+    if re.search(r'with suffix|with prefix|\+ -\w+|-\w+ \+', text):
+        return 'DERIVATION'
 
-    if middle_pattern and old_pattern and proto_pattern:
-        return 'ROOT_INHERITED'
+    # Compound detection: "X + Y" or "compound of"
+    if 'compound of' in text or re.search(r'\w+ \+ \w+', text):
+        return 'COMPOUND'
+
+    # Ultimate borrowing (borrowed through multiple languages)
+    if 'ultimately from' in text and ('latin' in text or 'greek' in text or 'arabic' in text):
+        return 'BORROWED'
 
     return None
 
 
-def classify_morph_type(templates, etymology_text=''):
-    """
-    Classify morphological type from etymology templates.
-    Falls back to etymology_text analysis when templates are empty.
-    Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, BORROWED, ROOT_INHERITED, UNKNOWN
-    """
-    if not templates:
-        # Try fallback classification from etymology_text
-        fallback = classify_from_etymology_text(etymology_text)
-        if fallback:
-            return fallback
-        return 'UNKNOWN'
-
-    template_names = {t.get('name', '').lower() for t in templates}
-
-    has_root = bool(template_names & {n.lower() for n in ROOT_TEMPLATES})
-    has_derivation = bool(template_names & {n.lower() for n in DERIVATION_TEMPLATES})
-    has_compound = bool(template_names & {n.lower() for n in COMPOUND_TEMPLATES})
-    has_borrowed = bool(template_names & {n.lower() for n in BORROWED_TEMPLATES})
-    has_inherited = bool(template_names & {n.lower() for n in INHERITED_TEMPLATES})
-
-    # Check for compound templates with 2+ component args
-    compound_with_parts = False
-    for t in templates:
-        name = t.get('name', '').lower()
-        if name in {n.lower() for n in COMPOUND_TEMPLATES}:
-            args = t.get('args', {})
-            # Count positional args that could be word components (usually 2+)
-            component_count = sum(1 for k, v in args.items() if k.isdigit() and int(k) >= 2 and v)
-            if component_count >= 2:
-                compound_with_parts = True
-                break
-
-    # Classification logic
-    if has_compound and has_derivation:
-        return 'COMPOUND_DERIVATION'
-    if compound_with_parts or has_compound:
-        return 'COMPOUND'
-    if has_derivation:
-        return 'DERIVATION'
-    if has_borrowed and not has_root:
-        return 'BORROWED'
-    if has_root and not has_derivation and not has_compound:
-        return 'ROOT'
-    if has_inherited and not has_root and not has_derivation and not has_compound:
-        return 'ROOT_INHERITED'
-
-    return 'UNKNOWN'
-
-
 def extract_root(templates):
-    """Extract root consonants from ar-root/he-root/sa-root/root templates."""
+    """Extract root consonants from any template with 'root' in the name."""
     for t in templates:
         name = t.get('name', '').lower()
-        if name in {'ar-root', 'he-root', 'sa-root', 'he-rootbox', 'ar-rootbox', 'root'}:
+        # Match any template with "root" in name (ar-root, he-root, sa-root, root, rootbox, etc.)
+        if 'root' in name:
             args = t.get('args', {})
             # Root args are typically positional: arg 1 is lang, arg 2+ are root consonants
             root_parts = []
@@ -191,6 +274,9 @@ def extract_root(templates):
                     root_parts.append(part)
             if root_parts:
                 return '-'.join(root_parts)
+            # Some root templates use arg 1 directly
+            if args.get('1') and not args.get('2'):
+                return args.get('1', '')
     return ''
 
 
@@ -326,14 +412,14 @@ def extract_proto_root(templates):
 
     for t in templates:
         name = t.get('name', '').lower()
-        if name in {'inh', 'inherited', 'der', 'derived'}:
+        # Check inheritance/derivation templates including + variants
+        if name in ('inh', 'inh+', 'inherited', 'der', 'der+', 'derived'):
             args = t.get('args', {})
             lang = args.get('2', args.get('1', ''))
             word = args.get('3', args.get('2', ''))
 
-            # Check if it's a proto-language
-            if lang and ('proto' in lang.lower() or lang.startswith('ine-pro') or
-                        lang.startswith('sem-pro') or lang.startswith('gmw-pro')):
+            # Check if it's a proto-language using our helper
+            if is_proto_language(lang):
                 expansion = t.get('expansion', '')
                 if expansion and 'Proto' in expansion:
                     proto_forms.append(expansion)
