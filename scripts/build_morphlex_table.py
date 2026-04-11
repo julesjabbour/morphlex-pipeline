@@ -56,6 +56,7 @@ CONCEPTS_TO_FIND = 20
 
 DATA_DIR = '/mnt/pgdata/morphlex/data/open_wordnets'
 OUTPUT_FILE = '/mnt/pgdata/morphlex/data/morphlex_test_20.csv'
+MASTER_TABLE_FILE = '/mnt/pgdata/morphlex/data/master_table.csv'
 
 
 # ============== HIT RATE FIX 1: Diacritic stripping ==============
@@ -446,6 +447,82 @@ def parse_etymology_templates(templates, etymology_text=''):
     }
 
 
+# ============== CONCEPT ID LOOKUP ==============
+
+def build_english_to_synset_lookup(master_table_file):
+    """
+    Stream master_table.csv line by line, building english_word -> synset_id lookup.
+    Only keeps the small lookup dict in memory, not the full 51.5MB file.
+
+    Returns: dict mapping english_word (lowercase) -> synset_id
+    """
+    lookup = {}
+
+    if not os.path.exists(master_table_file):
+        print(f"WARNING: master_table.csv not found at {master_table_file}", file=sys.stderr)
+        return lookup
+
+    print(f"Building english_word -> synset_id lookup from {master_table_file}...", file=sys.stderr)
+
+    with open(master_table_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+
+        # Find the English word column - could be 'word', 'en', 'english', etc.
+        # And synset_id column
+        fieldnames = reader.fieldnames
+        if not fieldnames:
+            print("WARNING: master_table.csv has no headers", file=sys.stderr)
+            return lookup
+
+        # Identify columns
+        synset_col = None
+        english_col = None
+
+        for col in fieldnames:
+            col_lower = col.lower()
+            if col_lower == 'synset_id' or col_lower == 'synset':
+                synset_col = col
+            elif col_lower == 'word' or col_lower == 'en' or col_lower == 'english' or col_lower == 'english_word':
+                english_col = col
+
+        if not synset_col:
+            print(f"WARNING: No synset_id column found in master_table. Columns: {fieldnames}", file=sys.stderr)
+            return lookup
+
+        if not english_col:
+            print(f"WARNING: No English word column found in master_table. Columns: {fieldnames}", file=sys.stderr)
+            return lookup
+
+        print(f"  Using columns: synset_id='{synset_col}', english_word='{english_col}'", file=sys.stderr)
+
+        row_count = 0
+        for row in reader:
+            row_count += 1
+            synset_id = row.get(synset_col, '').strip()
+            english_word = row.get(english_col, '').strip()
+
+            if english_word and synset_id:
+                # Store lowercase for case-insensitive lookup
+                lookup[english_word.lower()] = synset_id
+
+        print(f"  Loaded {len(lookup)} unique english_word -> synset_id mappings from {row_count} rows", file=sys.stderr)
+
+    return lookup
+
+
+def get_concept_id(english_word, synset_lookup):
+    """
+    Look up concept_id for an english_word.
+    Returns synset_id if found, 'UNMAPPED' otherwise.
+    """
+    if not synset_lookup:
+        return 'UNMAPPED'
+
+    # Case-insensitive lookup
+    synset_id = synset_lookup.get(english_word.lower())
+    return synset_id if synset_id else 'UNMAPPED'
+
+
 # ============== CORE FUNCTIONS ==============
 
 def stream_english_for_concepts(english_file, concepts_needed):
@@ -600,6 +677,9 @@ def main():
     start_time = datetime.now()
     print(f"Start: {start_time.isoformat()}", file=sys.stderr)
 
+    # Step 0: Build english_word -> synset_id lookup from master_table
+    synset_lookup = build_english_to_synset_lookup(MASTER_TABLE_FILE)
+
     # Step 1: Find concepts from English file
     english_file = os.path.join(DATA_DIR, 'kaikki-english.jsonl')
     concepts = stream_english_for_concepts(english_file, CONCEPTS_TO_FIND)
@@ -650,10 +730,11 @@ def main():
             eng_hits += 1
             morph_type_counts[classification['morph_type']] += 1
 
-        # Serialize templates to JSON for root_templates column
-        root_templates_json = json.dumps(templates, ensure_ascii=False) if templates else ''
+        # Get concept_id from synset lookup
+        concept_id = get_concept_id(eng_word, synset_lookup)
 
         rows.append({
+            'concept_id': concept_id,
             'english_word': eng_word,
             'sense': data['sense'][:100] if data['sense'] else '',
             'lang': 'en',
@@ -667,7 +748,6 @@ def main():
             'cognates': classification['cognates'],
             'proto_root': classification['proto_root'],
             'etymology_text': etymology_text[:500] if etymology_text else '',
-            'root_templates': root_templates_json,
             'forms_count': etym_data.get('forms_count', 0),
         })
 
@@ -698,9 +778,13 @@ def main():
         for eng_word, data in concepts.items():
             trans_words = data['translations'].get(lang_name, [])
 
+            # Get concept_id for this english_word (same for all languages)
+            concept_id = get_concept_id(eng_word, synset_lookup)
+
             if not trans_words:
                 # No translation for this language
                 rows.append({
+                    'concept_id': concept_id,
                     'english_word': eng_word,
                     'sense': data['sense'][:100] if data['sense'] else '',
                     'lang': lang_code,
@@ -714,7 +798,6 @@ def main():
                     'cognates': '',
                     'proto_root': '',
                     'etymology_text': '',
-                    'root_templates': '',
                     'forms_count': 0,
                 })
                 continue
@@ -738,10 +821,8 @@ def main():
                 lang_hits += 1
                 morph_type_counts[classification['morph_type']] += 1
 
-            # Serialize templates to JSON for root_templates column
-            root_templates_json = json.dumps(templates, ensure_ascii=False) if templates else ''
-
             rows.append({
+                'concept_id': concept_id,
                 'english_word': eng_word,
                 'sense': data['sense'][:100] if data['sense'] else '',
                 'lang': lang_code,
@@ -755,7 +836,6 @@ def main():
                 'cognates': classification['cognates'],
                 'proto_root': classification['proto_root'],
                 'etymology_text': etymology_text[:500] if etymology_text else '',
-                'root_templates': root_templates_json,
                 'forms_count': best_etym.get('forms_count', 0),
             })
 
@@ -765,10 +845,10 @@ def main():
     # Step 3: Write CSV
     print(f"\nWriting CSV to {OUTPUT_FILE}...", file=sys.stderr)
 
-    fieldnames = ['english_word', 'sense', 'lang', 'translated_word', 'pos',
+    fieldnames = ['concept_id', 'english_word', 'sense', 'lang', 'translated_word', 'pos',
                   'morph_type', 'root', 'derivation_rule', 'derivation_source',
                   'compound_parts', 'cognates', 'proto_root', 'etymology_text',
-                  'root_templates', 'forms_count']
+                  'forms_count']
 
     with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -790,12 +870,17 @@ def main():
     for mtype, count in sorted(morph_type_counts.items(), key=lambda x: -x[1]):
         print(f"  {mtype}: {count}")
 
-    # Count rows with non-empty vs empty root_templates
-    templates_nonempty = sum(1 for r in rows if r.get('root_templates', ''))
-    templates_empty = len(rows) - templates_nonempty
-    print(f"\nRoot templates column:")
-    print(f"  Non-empty: {templates_nonempty}")
-    print(f"  Empty: {templates_empty}")
+    # Concept ID statistics
+    # Count only English rows (one per concept) to get unique concept stats
+    en_rows = [r for r in rows if r.get('lang') == 'en']
+    mapped_concepts = sum(1 for r in en_rows if r.get('concept_id') != 'UNMAPPED')
+    unmapped_concepts = len(en_rows) - mapped_concepts
+    unique_concept_ids = len(set(r.get('concept_id') for r in en_rows if r.get('concept_id') != 'UNMAPPED'))
+
+    print(f"\nConcept ID mapping (of {len(en_rows)} concepts):")
+    print(f"  Mapped to synset_id: {mapped_concepts}")
+    print(f"  UNMAPPED: {unmapped_concepts}")
+    print(f"  Unique concept_ids: {unique_concept_ids}")
 
     print(f"\nTotal time: {elapsed:.1f}s")
 
