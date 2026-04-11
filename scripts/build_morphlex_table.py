@@ -15,6 +15,7 @@ Features:
 import csv
 import json
 import os
+import re
 import sys
 import unicodedata
 from collections import Counter
@@ -91,12 +92,52 @@ BORROWED_TEMPLATES = {'bor', 'borrowed'}
 INHERITED_TEMPLATES = {'inh', 'inherited'}
 
 
-def classify_morph_type(templates):
+def classify_from_etymology_text(etymology_text):
+    """
+    Fallback classification from etymology_text when templates are empty.
+    Returns morph_type or None if no clear pattern found.
+    """
+    if not etymology_text:
+        return None
+
+    text = etymology_text.lower()
+
+    # BORROWED patterns
+    if 'borrowed from' in text or 'from latin' in text or 'from french' in text or \
+       'from italian' in text or 'from greek' in text:
+        return 'BORROWED'
+
+    # ROOT patterns
+    if 'from the root' in text or 'from root' in text:
+        return 'ROOT'
+
+    # DERIVATION patterns
+    if 'from the adjective' in text or 'from the verb' in text or 'from the noun' in text:
+        return 'DERIVATION'
+
+    # ROOT_INHERITED pattern: "From Middle X, from Old X, from Proto-"
+    # Match patterns like "from middle high german ... from old high german ... from proto-germanic"
+    middle_pattern = re.search(r'from middle \w+', text)
+    old_pattern = re.search(r'from old \w+', text)
+    proto_pattern = re.search(r'from proto-', text)
+
+    if middle_pattern and old_pattern and proto_pattern:
+        return 'ROOT_INHERITED'
+
+    return None
+
+
+def classify_morph_type(templates, etymology_text=''):
     """
     Classify morphological type from etymology templates.
+    Falls back to etymology_text analysis when templates are empty.
     Returns: ROOT, DERIVATION, COMPOUND, COMPOUND_DERIVATION, BORROWED, ROOT_INHERITED, UNKNOWN
     """
     if not templates:
+        # Try fallback classification from etymology_text
+        fallback = classify_from_etymology_text(etymology_text)
+        if fallback:
+            return fallback
         return 'UNKNOWN'
 
     template_names = {t.get('name', '').lower() for t in templates}
@@ -303,13 +344,13 @@ def extract_proto_root(templates):
     return proto_forms[0] if proto_forms else ''
 
 
-def parse_etymology_templates(templates):
+def parse_etymology_templates(templates, etymology_text=''):
     """
     Parse etymology templates into structured classification fields.
     Returns dict with all classification columns.
     """
     return {
-        'morph_type': classify_morph_type(templates),
+        'morph_type': classify_morph_type(templates, etymology_text),
         'root': extract_root(templates),
         'derivation_rule': extract_derivation_info(templates)[0],
         'derivation_source': extract_derivation_info(templates)[1],
@@ -516,11 +557,15 @@ def main():
     for eng_word, data in concepts.items():
         etym_data = lookup_word(eng_word, exact_lookup, stripped_lookup)
         templates = etym_data.get('etymology_templates', [])
-        classification = parse_etymology_templates(templates)
+        etymology_text = etym_data.get('etymology_text', '')
+        classification = parse_etymology_templates(templates, etymology_text)
 
-        if templates:
+        if templates or etymology_text:
             eng_hits += 1
             morph_type_counts[classification['morph_type']] += 1
+
+        # Serialize templates to JSON for root_templates column
+        root_templates_json = json.dumps(templates, ensure_ascii=False) if templates else ''
 
         rows.append({
             'english_word': eng_word,
@@ -535,7 +580,8 @@ def main():
             'compound_parts': classification['compound_parts'],
             'cognates': classification['cognates'],
             'proto_root': classification['proto_root'],
-            'etymology_text': etym_data.get('etymology_text', '')[:500] if etym_data.get('etymology_text') else '',
+            'etymology_text': etymology_text[:500] if etymology_text else '',
+            'root_templates': root_templates_json,
             'forms_count': etym_data.get('forms_count', 0),
         })
 
@@ -582,6 +628,7 @@ def main():
                     'cognates': '',
                     'proto_root': '',
                     'etymology_text': '',
+                    'root_templates': '',
                     'forms_count': 0,
                 })
                 continue
@@ -598,11 +645,15 @@ def main():
                     break
 
             templates = best_etym.get('etymology_templates', [])
-            classification = parse_etymology_templates(templates)
+            etymology_text = best_etym.get('etymology_text', '')
+            classification = parse_etymology_templates(templates, etymology_text)
 
-            if templates:
+            if templates or etymology_text:
                 lang_hits += 1
                 morph_type_counts[classification['morph_type']] += 1
+
+            # Serialize templates to JSON for root_templates column
+            root_templates_json = json.dumps(templates, ensure_ascii=False) if templates else ''
 
             rows.append({
                 'english_word': eng_word,
@@ -617,7 +668,8 @@ def main():
                 'compound_parts': classification['compound_parts'],
                 'cognates': classification['cognates'],
                 'proto_root': classification['proto_root'],
-                'etymology_text': best_etym.get('etymology_text', '')[:500] if best_etym.get('etymology_text') else '',
+                'etymology_text': etymology_text[:500] if etymology_text else '',
+                'root_templates': root_templates_json,
                 'forms_count': best_etym.get('forms_count', 0),
             })
 
@@ -629,7 +681,8 @@ def main():
 
     fieldnames = ['english_word', 'sense', 'lang', 'translated_word', 'pos',
                   'morph_type', 'root', 'derivation_rule', 'derivation_source',
-                  'compound_parts', 'cognates', 'proto_root', 'etymology_text', 'forms_count']
+                  'compound_parts', 'cognates', 'proto_root', 'etymology_text',
+                  'root_templates', 'forms_count']
 
     with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -650,6 +703,13 @@ def main():
     print(f"\nMorph type distribution (all rows with etymology):")
     for mtype, count in sorted(morph_type_counts.items(), key=lambda x: -x[1]):
         print(f"  {mtype}: {count}")
+
+    # Count rows with non-empty vs empty root_templates
+    templates_nonempty = sum(1 for r in rows if r.get('root_templates', ''))
+    templates_empty = len(rows) - templates_nonempty
+    print(f"\nRoot templates column:")
+    print(f"  Non-empty: {templates_nonempty}")
+    print(f"  Empty: {templates_empty}")
 
     print(f"\nTotal time: {elapsed:.1f}s")
 
