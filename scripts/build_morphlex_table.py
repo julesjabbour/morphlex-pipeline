@@ -53,10 +53,10 @@ LANG_CODES = {
 
 TARGET_LANGS = {'Arabic', 'German', 'Hebrew', 'Turkish', 'Sanskrit', 'Latin', 'Ancient Greek', 'Chinese', 'Japanese'}
 MIN_LANGS_REQUIRED = 3
-CONCEPTS_TO_FIND = 100
+CONCEPTS_TO_FIND = 9000  # Full run - collect up to 9000 concepts
 
 DATA_DIR = '/mnt/pgdata/morphlex/data/open_wordnets'
-OUTPUT_FILE = '/mnt/pgdata/morphlex/data/morphlex_test_100.csv'
+OUTPUT_FILE = '/mnt/pgdata/morphlex/data/morphlex_full.csv'
 MASTER_TABLE_FILE = '/mnt/pgdata/morphlex/data/master_table.csv'
 
 # Memory limit in bytes (6GB)
@@ -400,21 +400,21 @@ def parse_etymology_templates(templates, etymology_text=''):
 
 # ============== CONCEPT ID LOOKUP ==============
 
-def build_english_to_synset_lookup(master_table_file):
+def build_english_to_synset_lookup(master_table_file, silent=False):
     """Stream master_table.csv, building english_word -> synset_id lookup."""
     lookup = {}
 
     if not os.path.exists(master_table_file):
-        print(f"WARNING: master_table.csv not found at {master_table_file}", file=sys.stderr)
+        if not silent:
+            print(f"WARNING: master_table.csv not found at {master_table_file}", file=sys.stderr)
         return lookup
-
-    print(f"Building english_word -> synset_id lookup from {master_table_file}...", file=sys.stderr)
 
     with open(master_table_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames
         if not fieldnames:
-            print("WARNING: master_table.csv has no headers", file=sys.stderr)
+            if not silent:
+                print("WARNING: master_table.csv has no headers", file=sys.stderr)
             return lookup
 
         synset_col = None
@@ -428,21 +428,16 @@ def build_english_to_synset_lookup(master_table_file):
                 english_col = col
 
         if not synset_col or not english_col:
-            print(f"WARNING: Missing columns. Found: {fieldnames}", file=sys.stderr)
+            if not silent:
+                print(f"WARNING: Missing columns. Found: {fieldnames}", file=sys.stderr)
             return lookup
 
-        print(f"  Using columns: synset_id='{synset_col}', english_word='{english_col}'", file=sys.stderr)
-
-        row_count = 0
         for row in reader:
-            row_count += 1
             synset_id = row.get(synset_col, '').strip()
             english_word = row.get(english_col, '').strip()
 
             if english_word and synset_id:
                 lookup[english_word.lower()] = synset_id
-
-        print(f"  Loaded {len(lookup)} unique english_word -> synset_id mappings from {row_count} rows", file=sys.stderr)
 
     return lookup
 
@@ -457,7 +452,7 @@ def get_concept_id(english_word, synset_lookup):
 
 # ============== OPTIMIZED LOOKUP BUILDING ==============
 
-def build_full_language_lookup(lang_file, is_chinese=False):
+def build_full_language_lookup(lang_file, is_chinese=False, silent=False):
     """
     Build complete word -> etymology lookup for a language file.
     Stores ONLY needed fields: etymology_text, etymology_templates, pos, forms_count.
@@ -469,7 +464,8 @@ def build_full_language_lookup(lang_file, is_chinese=False):
     lookup = {}
 
     if not os.path.exists(lang_file):
-        print(f"  WARNING: File not found: {lang_file}", file=sys.stderr)
+        if not silent:
+            print(f"  WARNING: File not found: {lang_file}", file=sys.stderr)
         return lookup
 
     entries_read = 0
@@ -518,7 +514,7 @@ def build_full_language_lookup(lang_file, is_chinese=False):
                             len(etymology_templates) > len(lookup[sv].get('etymology_templates', []))):
                             lookup[sv] = entry_data
 
-    print(f"  Loaded {len(lookup)} word lookups from {entries_read:,} entries ({entries_with_etym:,} with etymology)", file=sys.stderr)
+    # Summary stats collected, no per-language progress output
     return lookup
 
 
@@ -534,13 +530,11 @@ def stream_english_for_concepts_and_etymology(english_file, concepts_needed):
     english_etym = {}
     lines_read = 0
 
-    print(f"Streaming {english_file} for concepts and etymologies...", file=sys.stderr)
+    # Streaming silently - no per-line progress output
 
     with open(english_file, 'r', encoding='utf-8') as f:
         for line in f:
             lines_read += 1
-            if lines_read % 500000 == 0:
-                print(f"  ...processed {lines_read:,} lines, found {len(concepts)} concepts", file=sys.stderr)
 
             entry = json.loads(line)
 
@@ -608,10 +602,9 @@ def stream_english_for_concepts_and_etymology(english_file, concepts_needed):
                     'translations': lang_translations,
                 }
 
-    print(f"  Found {len(concepts)} concepts from {lines_read:,} lines", file=sys.stderr)
-    print(f"  Collected {len(english_etym)} English etymology entries", file=sys.stderr)
+    # Summary printed at end, not during streaming
 
-    return concepts, english_etym
+    return concepts, english_etym, lines_read
 
 
 def lookup_word(word, lookup, is_chinese=False):
@@ -637,57 +630,50 @@ def lookup_word(word, lookup, is_chinese=False):
 
 def main():
     start_time = datetime.now()
-    print(f"Start: {start_time.isoformat()}", file=sys.stderr)
 
-    # Initial memory check
-    initial_mem = check_memory_limit("startup")
-    print(f"Initial memory: {initial_mem:.1f}MB", file=sys.stderr)
+    # Silent memory checks - only abort if limit exceeded
+    check_memory_limit("startup")
 
-    # ============== PHASE 1: LOAD ALL LOOKUPS ==============
-    print("\n=== PHASE 1: Loading all lookups into memory ===", file=sys.stderr)
-
+    # ============== PHASE 1: LOAD ALL LOOKUPS (silently) ==============
     # Step 1a: Build synset lookup from master_table
-    synset_lookup = build_english_to_synset_lookup(MASTER_TABLE_FILE)
-    mem_after_synset = check_memory_limit("after synset lookup")
-    print(f"Memory after synset lookup: {mem_after_synset:.1f}MB", file=sys.stderr)
+    synset_lookup = build_english_to_synset_lookup(MASTER_TABLE_FILE, silent=True)
+    check_memory_limit("after synset lookup")
 
     # Step 1b: Stream English file for concepts AND etymologies (ONE PASS)
     english_file = os.path.join(DATA_DIR, 'kaikki-english.jsonl')
-    concepts, english_etym_lookup = stream_english_for_concepts_and_etymology(english_file, CONCEPTS_TO_FIND)
+    concepts, english_etym_lookup, english_lines_read = stream_english_for_concepts_and_etymology(english_file, CONCEPTS_TO_FIND)
 
     if not concepts:
         print("ERROR: No concepts found!", file=sys.stderr)
         sys.exit(1)
 
-    mem_after_english = check_memory_limit("after English")
-    print(f"Memory after English: {mem_after_english:.1f}MB", file=sys.stderr)
+    check_memory_limit("after English")
 
-    # Step 1c: Build lookups for all other languages
+    # Step 1c: Build lookups for all other languages (silently)
     lang_lookups = {}
+    lang_word_counts = {}
 
     for lang_name in TARGET_LANGS:
         lang_code = LANG_CODES[lang_name]
         lang_file = os.path.join(DATA_DIR, LANG_FILE_MAP[lang_name])
         is_chinese = (lang_name == 'Chinese')
 
-        print(f"Loading {lang_name} ({lang_code})...", file=sys.stderr)
-        lang_lookups[lang_name] = build_full_language_lookup(lang_file, is_chinese=is_chinese)
+        lang_lookups[lang_name] = build_full_language_lookup(lang_file, is_chinese=is_chinese, silent=True)
+        lang_word_counts[lang_code] = len(lang_lookups[lang_name])
 
-        mem_now = check_memory_limit(f"after {lang_name}")
+        check_memory_limit(f"after {lang_name}")
 
     # Final memory check after all lookups loaded
     peak_mem = check_memory_limit("after all lookups")
-    print(f"\n=== All lookups loaded. Peak memory: {peak_mem:.1f}MB ===", file=sys.stderr)
 
     # ============== PHASE 2: PROCESS CONCEPTS ==============
-    print("\n=== PHASE 2: Processing concepts (no file re-reading) ===", file=sys.stderr)
+    # Silently process all concepts - no per-language progress output
 
     rows = []
     hits_by_lang = {}
     morph_type_counts = Counter()
 
     # Process English (source words)
-    print(f"Processing English...", file=sys.stderr)
     eng_hits = 0
 
     for eng_word, data in concepts.items():
@@ -727,8 +713,6 @@ def main():
         lang_code = LANG_CODES[lang_name]
         is_chinese = (lang_name == 'Chinese')
         lookup = lang_lookups[lang_name]
-
-        print(f"Processing {lang_name} ({lang_code})...", file=sys.stderr)
 
         lang_hits = 0
         for eng_word, data in concepts.items():
@@ -795,8 +779,6 @@ def main():
         hits_by_lang[lang_code] = lang_hits
 
     # ============== PHASE 3: WRITE CSV ==============
-    print(f"\nWriting CSV to {OUTPUT_FILE}...", file=sys.stderr)
-
     fieldnames = ['concept_id', 'english_word', 'sense', 'lang', 'translated_word', 'pos',
                   'morph_type', 'root', 'derivation_rule', 'derivation_source',
                   'compound_parts', 'cognates', 'proto_root', 'etymology_text',
@@ -810,12 +792,72 @@ def main():
     end_time = datetime.now()
     elapsed = (end_time - start_time).total_seconds()
 
-    # ============== PHASE 4: PRINT STATS ==============
-    print(f"\n{'='*60}")
-    print(f"MORPHLEX TABLE BUILD COMPLETE")
+    # Get file size
+    file_size_bytes = os.path.getsize(OUTPUT_FILE)
+    file_size_mb = file_size_bytes / (1024 * 1024)
+
+    # ============== PHASE 4: CROSS-REFERENCE CHECKS ==============
+    # Build per-language word sets for cross-reference checking
+    words_by_lang = {}
+    for row in rows:
+        lang = row.get('lang', '')
+        tw = row.get('translated_word', '')
+        if lang and tw:
+            if lang not in words_by_lang:
+                words_by_lang[lang] = set()
+            words_by_lang[lang].add(strip_diacritics(tw.lower()))
+
+    # Check DERIVATION rows: does derivation_source exist in table for that language?
+    derivation_total = 0
+    derivation_found = 0
+    derivation_not_found = 0
+
+    for row in rows:
+        if row.get('morph_type') == 'DERIVATION':
+            derivation_source = row.get('derivation_source', '')
+            lang = row.get('lang', '')
+            if derivation_source and lang:
+                derivation_total += 1
+                # Extract just the word part (before any parenthetical gloss)
+                source_word = derivation_source.split('(')[0].strip()
+                source_word = strip_diacritics(source_word.lower())
+                lang_words = words_by_lang.get(lang, set())
+                if source_word in lang_words:
+                    derivation_found += 1
+                else:
+                    derivation_not_found += 1
+
+    # Check COMPOUND rows: do compound_parts exist in table for that language?
+    compound_total = 0
+    compound_found = 0
+    compound_not_found = 0
+
+    for row in rows:
+        if row.get('morph_type') in ('COMPOUND', 'COMPOUND_DERIVATION'):
+            compound_parts_json = row.get('compound_parts', '')
+            lang = row.get('lang', '')
+            if compound_parts_json and lang:
+                try:
+                    parts = json.loads(compound_parts_json)
+                    lang_words = words_by_lang.get(lang, set())
+                    for part in parts:
+                        part_word = part.get('word', '')
+                        if part_word:
+                            compound_total += 1
+                            part_word_stripped = strip_diacritics(part_word.lower())
+                            if part_word_stripped in lang_words:
+                                compound_found += 1
+                            else:
+                                compound_not_found += 1
+                except json.JSONDecodeError:
+                    pass
+
+    # ============== PHASE 5: PRINT SUMMARY STATS ==============
+    print(f"{'='*60}")
+    print(f"MORPHLEX FULL BUILD COMPLETE")
     print(f"{'='*60}")
 
-    print(f"\nTotal concepts: {len(concepts)}")
+    print(f"\nTotal concepts collected: {len(concepts)}")
 
     print(f"\nPer-language hit rates (of {len(concepts)}):")
     for lang_code in ['en', 'ar', 'de', 'he', 'tr', 'sa', 'la', 'grc', 'zh', 'ja']:
@@ -833,25 +875,29 @@ def main():
     unmapped_concepts = len(en_rows) - mapped_concepts
     unique_concept_ids = len(set(r.get('concept_id') for r in en_rows if r.get('concept_id') != 'UNMAPPED'))
 
-    print(f"\nConcept ID mapping (of {len(en_rows)} concepts):")
+    print(f"\nConcept mapping stats (of {len(en_rows)} concepts):")
     print(f"  Mapped to synset_id: {mapped_concepts}")
     print(f"  UNMAPPED: {unmapped_concepts}")
     print(f"  Unique concept_ids: {unique_concept_ids}")
 
-    print(f"\nTiming:")
-    print(f"  Total time: {elapsed:.1f}s")
+    print(f"\nCross-reference check - DERIVATION:")
+    print(f"  Total derivations checked: {derivation_total}")
+    print(f"  Source found in table: {derivation_found}")
+    print(f"  Source not found: {derivation_not_found}")
 
-    if len(concepts) > 0:
-        time_per_concept = elapsed / len(concepts)
-        estimated_9000 = time_per_concept * 9000
-        print(f"  Estimated time for 9000 concepts: {estimated_9000/60:.1f} minutes")
+    print(f"\nCross-reference check - COMPOUND:")
+    print(f"  Total compound parts checked: {compound_total}")
+    print(f"  Part found in table: {compound_found}")
+    print(f"  Part not found: {compound_not_found}")
 
-    print(f"\nMemory usage:")
-    print(f"  Peak memory (after all lookups): {peak_mem:.1f}MB")
+    print(f"\nTotal time: {elapsed:.1f}s ({elapsed/60:.1f} minutes)")
+
+    print(f"\nPeak memory: {peak_mem:.1f}MB")
     final_mem = get_memory_usage_mb()
-    print(f"  Final memory: {final_mem:.1f}MB")
+    print(f"Final memory: {final_mem:.1f}MB")
 
-    print(f"\nOutput saved to: {OUTPUT_FILE}")
+    print(f"\nOutput file: {OUTPUT_FILE}")
+    print(f"File size: {file_size_mb:.1f}MB ({file_size_bytes:,} bytes)")
 
 
 if __name__ == '__main__':
