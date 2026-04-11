@@ -1,19 +1,19 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
-echo "=== CONCEPT UNIFICATION: ADD concept_id COLUMN ==="
+echo "=== OPTIMIZED BUILD: 100 CONCEPTS WITH MEMORY MONITORING ==="
 echo "Git: $(git rev-parse HEAD)"
 echo "Start: $(date -Iseconds)"
 echo ""
 
-# Run the updated build_morphlex_table.py with concept_id support
+# Run the optimized build_morphlex_table.py
 python3 scripts/build_morphlex_table.py
 
 echo ""
-echo "=== CSV PREVIEW (first 5 data rows with concept_id) ==="
+echo "=== CSV PREVIEW (first 5 data rows) ==="
 python3 -c "
 import csv
-with open('data/morphlex_test_20.csv', newline='', encoding='utf-8') as f:
+with open('data/morphlex_test_100.csv', newline='', encoding='utf-8') as f:
     reader = csv.DictReader(f)
     for i, row in enumerate(reader):
         if i >= 5:
