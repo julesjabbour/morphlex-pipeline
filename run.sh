@@ -57,7 +57,7 @@ fi
 
 # SAFEGUARD 2: Marker file to prevent re-running same task
 HASH=$(md5sum next_task.sh | cut -d' ' -f1)
-MARKER_DIR="/tmp/morphlex_markers"
+MARKER_DIR="/mnt/pgdata/morphlex/.markers"
 MARKER_FILE="$MARKER_DIR/done_$HASH"
 mkdir -p "$MARKER_DIR"
 
