@@ -6,6 +6,16 @@ set -o pipefail
 DEBUG_LOG="/tmp/morphlex_debug.log"
 REPORTS_DIR="/mnt/pgdata/morphlex/reports"
 
+# FIX: chown root-owned lock and log files to cron user BEFORE any I/O
+# These may have been created by an earlier sudo run
+CRON_USER=$(whoami)
+if [ -f /tmp/morphlex_run.lock ] && [ "$(stat -c '%U' /tmp/morphlex_run.lock 2>/dev/null)" != "$CRON_USER" ]; then
+    sudo chown "$CRON_USER:$CRON_USER" /tmp/morphlex_run.lock 2>/dev/null || true
+fi
+if [ -f "$DEBUG_LOG" ] && [ "$(stat -c '%U' "$DEBUG_LOG" 2>/dev/null)" != "$CRON_USER" ]; then
+    sudo chown "$CRON_USER:$CRON_USER" "$DEBUG_LOG" 2>/dev/null || true
+fi
+
 log() {
     echo "[$(date -Iseconds)] $1" | tee -a "$DEBUG_LOG"
 }
