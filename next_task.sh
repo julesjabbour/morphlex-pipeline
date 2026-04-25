@@ -1,6 +1,21 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
+# FIX: chown root-owned lock and log files to cron user
+# These were created by a sudo run and block cron (runs as jules_jabbour_gmail_com)
+echo "=== FIXING LOCK FILE OWNERSHIP ==="
+if [ -f /tmp/morphlex_run.lock ]; then
+  ls -la /tmp/morphlex_run.lock
+  sudo chown jules_jabbour_gmail_com:jules_jabbour_gmail_com /tmp/morphlex_run.lock
+  echo "Fixed: /tmp/morphlex_run.lock"
+fi
+if [ -f /tmp/morphlex_debug.log ]; then
+  ls -la /tmp/morphlex_debug.log
+  sudo chown jules_jabbour_gmail_com:jules_jabbour_gmail_com /tmp/morphlex_debug.log
+  echo "Fixed: /tmp/morphlex_debug.log"
+fi
+echo ""
+
 # Clear all marker files to allow cron to run this task
 rm -f /tmp/.task_done* 2>/dev/null
 rm -rf /tmp/morphlex_markers 2>/dev/null
