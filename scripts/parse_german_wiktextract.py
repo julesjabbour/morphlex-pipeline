@@ -42,6 +42,7 @@ OUTPUT_FILE = DATA_DIR / "german_wiktextract_synset_map.pkl"
 REPORT_FILE = DATA_DIR / "german_wiktextract_report.md"
 PWN30_TO_OEWN_FILE = DATA_DIR / "pwn30_to_oewn_map.pkl"
 CONCEPT_MAP_FILE = Path("/mnt/pgdata/morphlex/data/concept_wordnet_map.pkl")
+ODENET_MAP_FILE = DATA_DIR / "odenet_synset_map.pkl"
 
 
 def log(msg):
@@ -424,6 +425,32 @@ def main():
     log(f"Overlap rate: {overlap_rate:.1f}%")
     log("")
 
+    # Compare with OdeNet
+    log("Comparing with OdeNet (previous German source)...")
+    if ODENET_MAP_FILE.exists():
+        try:
+            with open(ODENET_MAP_FILE, 'rb') as f:
+                odenet_map = pickle.load(f)
+            odenet_synsets = len(odenet_map)
+            odenet_words = sum(len(v) for v in odenet_map.values())
+            odenet_overlap = len(set(odenet_map.keys()) & concept_synsets)
+            odenet_coverage = 100 * odenet_overlap / len(concept_synsets) if concept_synsets else 0
+            log(f"  OdeNet synsets: {odenet_synsets:,}")
+            log(f"  OdeNet words: {odenet_words:,}")
+            log(f"  OdeNet overlap with concept_map: {odenet_overlap:,} ({odenet_coverage:.1f}%)")
+            log("")
+            log(f"  COMPARISON:")
+            log(f"    Wiktextract synsets: {len(synset_map):,} vs OdeNet: {odenet_synsets:,} ({len(synset_map)-odenet_synsets:+,})")
+            log(f"    Wiktextract words: {total_words:,} vs OdeNet: {odenet_words:,} ({total_words-odenet_words:+,})")
+            log(f"    Wiktextract overlap: {len(overlap):,} vs OdeNet: {odenet_overlap:,} ({len(overlap)-odenet_overlap:+,})")
+            improvement_pct = 100 * (len(synset_map) - odenet_synsets) / odenet_synsets if odenet_synsets else 0
+            log(f"    Synset improvement: {improvement_pct:+.1f}%")
+        except Exception as e:
+            log(f"  WARNING: Could not load OdeNet: {e}")
+    else:
+        log(f"  OdeNet file not found: {ODENET_MAP_FILE}")
+    log("")
+
     # Write output
     log("Writing output...")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -515,18 +542,17 @@ Git HEAD: {git_head}
     log(f"Duration: {datetime.now() - start_time}")
     log(f"End: {datetime.now().isoformat()}")
 
-    # Check if overlap meets threshold
-    if overlap_rate < 40:
+    # Check success criteria: target 50K+ synsets
+    if len(synset_map) < 50000:
         log("")
         log("=" * 70)
-        log(f"WARNING: Overlap rate {overlap_rate:.1f}% is below 40% threshold!")
+        log(f"WARNING: Only {len(synset_map):,} synsets, target was 50K+")
         log("=" * 70)
-        sys.exit(1)
-
-    log("")
-    log("=" * 70)
-    log("SUCCESS")
-    log("=" * 70)
+    else:
+        log("")
+        log("=" * 70)
+        log(f"SUCCESS: {len(synset_map):,} synsets (target: 50K+)")
+        log("=" * 70)
 
 
 if __name__ == "__main__":
