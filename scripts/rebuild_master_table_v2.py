@@ -33,6 +33,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Make analyzers/ importable
+sys.path.insert(0, '/mnt/pgdata/morphlex')
+
 DATA_DIR = Path('/mnt/pgdata/morphlex/data')
 OPEN_WORDNETS_DIR = DATA_DIR / 'open_wordnets'
 MASTER_TABLE = DATA_DIR / 'master_table.csv'
@@ -97,7 +100,8 @@ def analyze_word(word, lang_code):
             return results[0]
         return {}
     except Exception as e:
-        return {}
+        print(f"EXCEPTION in analyze_word: {type(e).__name__}: {e} (lang={lang_code}, word={word!r})", flush=True)
+        raise
 
 
 def main():
