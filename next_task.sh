@@ -1,6 +1,11 @@
 #!/bin/bash
 cd /mnt/pgdata/morphlex && source venv/bin/activate
 
+# Clear all marker files to allow cron to run this task
+rm -f /tmp/.task_done* 2>/dev/null
+rm -rf /tmp/morphlex_markers 2>/dev/null
+echo "Markers cleared."
+
 echo "=== DISK USAGE ==="
 df -h /mnt/pgdata
 echo ""
